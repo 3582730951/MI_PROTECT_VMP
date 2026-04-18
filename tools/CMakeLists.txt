@@ -82,3 +82,7 @@ elseif(VMP_PLATFORM STREQUAL "ios")
   target_compile_definitions(vmp-loader-selftest PRIVATE VMP_SELFTEST_IOS=1)
   set_target_properties(vmp-loader-selftest PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tools)
 endif()
+
+add_executable(vmp-state-probe ${CMAKE_CURRENT_SOURCE_DIR}/src/vmp_state_probe.cpp)
+target_link_libraries(vmp-state-probe PRIVATE vmp_runtime_state vmp_runtime_audit vmp_runtime_strings vmp_runtime_integrity nlohmann_json::nlohmann_json)
+set_target_properties(vmp-state-probe PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tools)

@@ -917,3 +917,10 @@
   - `cargo test --workspace`：通过。
   - `./build/tools/vmp-profile-tool validate/merge/diff`：通过；示例 merged profile 大小 `245` bytes。
   - `/tmp/vmp_clean_subtask15` clean-copy：`cmake -S . -B build -G Ninja && cmake --build build -j4 && ctest --test-dir build --output-on-failure && cargo test --workspace` 全部通过。
+
+## subtask_16
+- 本轮完成：受保护区域完整性注册/校验、VM1 JIT 完整性标签、RuntimeState 状态机收敛、Terminating grace/wipe 流程、vmp-state-probe CLI、新增 runtime_state_machine 测试。
+- 变更文件：runtime/integrity/*、runtime/state/*、runtime/strings/*、runtime/jit/include/vm1_jit.h、runtime/jit/src/jit.cpp、runtime/audit/src/reaction.cpp、loader/*/src/*_loader.cpp、tools/src/vmp_loader_selftest.cpp、tools/src/vmp_state_probe.cpp、tests/CMakeLists.txt、tests/runtime_state_machine/*。
+- 未完成项：无（本轮范围内已实现；PE roundtrip 仍按现有测试设计为 skipped）。
+- 验证结果：`cmake --build build -j4` 通过；`ctest --output-on-failure` 117/117 通过（1 skipped）；`cargo test --workspace` 通过；`/tmp/vmp-cleancopy` 重新配置 + 重建通过。
+- 下一子任务建议：subtask 17 测试面扩张与回归清理。

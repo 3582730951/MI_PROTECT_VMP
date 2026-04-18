@@ -25,6 +25,8 @@
 
 #include <vmp/runtime/audit/audit.h>
 #include <vmp/runtime/state/state.h>
+#include <vmp/runtime/strings/cipher.h>
+#include <vmp/runtime/strings/keyctx.h>
 #include <vmp/runtime/vm1/isa.h>
 #include <vmp/runtime/vm1/vm1.h>
 
@@ -316,6 +318,94 @@ void ensure_directory(const std::filesystem::path& dir) {
   }
 }
 
+std::array<std::uint8_t, 32> fallback_master_key(std::uint64_t module_id) {
+  std::array<std::uint8_t, 32> out{};
+  for (std::size_t i = 0; i < out.size(); ++i) {
+    out[i] = static_cast<std::uint8_t>(((module_id >> ((i % 8) * 8)) & 0xFFu) ^ (0x51u + static_cast<unsigned>(i)));
+  }
+  return out;
+}
+
+std::vector<std::uint8_t> fallback_salt(std::uint64_t module_id) {
+  std::vector<std::uint8_t> out(16);
+  for (std::size_t i = 0; i < out.size(); ++i) {
+    out[i] = static_cast<std::uint8_t>(((module_id >> ((i % 8) * 8)) & 0xFFu) ^ (0x27u + static_cast<unsigned>(i)));
+  }
+  return out;
+}
+
+std::array<std::uint8_t, 32> derive_integrity_key(std::uint64_t module_id) {
+  const auto master = fallback_master_key(module_id);
+  vmp::runtime::strings::KeyContext fallback(
+      vmp::runtime::strings::MasterKeyHandle([master] { return std::vector<std::uint8_t>(master.begin(), master.end()); }),
+      fallback_salt(module_id));
+  auto key = fallback.derive_subkey("vm1_jit_integrity");
+  return key.bytes();
+}
+
+std::array<std::uint8_t, 32> compute_integrity_tag(const std::array<std::uint8_t, 32>& key,
+                                                   std::uint64_t module_id,
+                                                   std::uint32_t block_start_pc,
+                                                   const std::vector<std::uint8_t>& bytes) {
+  std::vector<std::uint8_t> material;
+  material.reserve(12 + bytes.size());
+  for (int i = 0; i < 8; ++i) material.push_back(static_cast<std::uint8_t>((module_id >> (i * 8)) & 0xffu));
+  for (int i = 0; i < 4; ++i) material.push_back(static_cast<std::uint8_t>((block_start_pc >> (i * 8)) & 0xffu));
+  material.insert(material.end(), bytes.begin(), bytes.end());
+  const auto digest = vmp::runtime::strings::hmac_sha256(std::vector<std::uint8_t>(key.begin(), key.end()), material);
+  std::array<std::uint8_t, 32> out{};
+  std::copy_n(digest.begin(), out.size(), out.begin());
+  return out;
+}
+
+std::vector<std::uint8_t> read_file_bytes(const std::filesystem::path& path) {
+  std::ifstream in(path, std::ios::binary);
+  return std::vector<std::uint8_t>((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+}
+
+std::vector<std::uint8_t> snapshot_bytes(const void* ptr, std::size_t size) {
+  std::vector<std::uint8_t> out(size);
+  if (ptr != nullptr && size != 0) {
+    std::memcpy(out.data(), ptr, size);
+  }
+  return out;
+}
+
+bool patch_memory_byte(void* ptr, std::size_t size, std::size_t offset, std::uint8_t value) {
+  if (ptr == nullptr || offset >= size) {
+    return false;
+  }
+#if defined(_WIN32)
+  DWORD old_protect = 0;
+  if (!::VirtualProtect(ptr, size, PAGE_EXECUTE_READWRITE, &old_protect)) {
+    return false;
+  }
+  static_cast<std::uint8_t*>(ptr)[offset] = value;
+  ::VirtualProtect(ptr, size, old_protect, &old_protect);
+  return true;
+#else
+  const auto page_size = static_cast<std::size_t>(::sysconf(_SC_PAGESIZE));
+  const auto base = reinterpret_cast<std::uintptr_t>(ptr) & ~(static_cast<std::uintptr_t>(page_size) - 1u);
+  const auto span = (reinterpret_cast<std::uintptr_t>(ptr) + size) - base;
+  if (::mprotect(reinterpret_cast<void*>(base), span, PROT_READ | PROT_WRITE | PROT_EXEC) != 0) {
+    return false;
+  }
+  static_cast<std::uint8_t*>(ptr)[offset] = value;
+  ::mprotect(reinterpret_cast<void*>(base), span, PROT_READ | PROT_EXEC);
+  return true;
+#endif
+}
+
+bool patch_file_byte(const std::filesystem::path& path, std::size_t offset, std::uint8_t value) {
+  std::fstream io(path, std::ios::in | std::ios::out | std::ios::binary);
+  if (!io) {
+    return false;
+  }
+  io.seekp(static_cast<std::streamoff>(offset));
+  io.put(static_cast<char>(value));
+  return static_cast<bool>(io);
+}
+
 #if !defined(_WIN32)
 struct MmapRegion {
   void* ptr = nullptr;
@@ -360,6 +450,10 @@ struct Vm1Jit::Impl {
     std::filesystem::path c_source_path;
     std::filesystem::path c_so_path;
     std::uint32_t* trace_heap = nullptr;
+    std::array<std::uint8_t, 32> integrity_tag{};
+    void* integrity_ptr = nullptr;
+    std::size_t integrity_size = 0;
+    std::filesystem::path integrity_file_path;
 
     Entry() = default;
     Entry(const Entry&) = delete;
@@ -384,6 +478,10 @@ struct Vm1Jit::Impl {
         c_source_path = std::move(other.c_source_path);
         c_so_path = std::move(other.c_so_path);
         trace_heap = other.trace_heap;
+        integrity_tag = other.integrity_tag;
+        integrity_ptr = other.integrity_ptr;
+        integrity_size = other.integrity_size;
+        integrity_file_path = std::move(other.integrity_file_path);
         other.fn = nullptr;
         other.code_region = nullptr;
 #if !defined(_WIN32)
@@ -391,6 +489,8 @@ struct Vm1Jit::Impl {
         other.dl_handle = nullptr;
 #endif
         other.trace_heap = nullptr;
+        other.integrity_ptr = nullptr;
+        other.integrity_size = 0;
       }
       return *this;
     }
@@ -425,6 +525,7 @@ struct Vm1Jit::Impl {
     std::uint64_t lru_clock = 0;
     std::unordered_map<std::uint32_t, Entry> entries;
     std::unordered_map<std::uint32_t, TraceCandidate> trace_candidates;
+    std::unordered_set<std::uint32_t> cooldown_entries;
   };
 
   mutable std::mutex mutex;
@@ -499,9 +600,22 @@ struct Vm1Jit::Impl {
     }
   }
 
-  Entry* find_ready_entry(ModuleCache& cache, std::uint32_t start_pc, std::uint64_t hit_count) {
+  Entry* find_ready_entry(ModuleCache& cache, std::uint64_t module_id, std::uint32_t start_pc, std::uint64_t hit_count) {
     auto it = cache.entries.find(start_pc);
     if (it == cache.entries.end() || it->second.fn == nullptr || hit_count < it->second.activation_hit) {
+      return nullptr;
+    }
+    std::vector<std::uint8_t> current_bytes = it->second.integrity_ptr != nullptr
+                                              ? snapshot_bytes(it->second.integrity_ptr, it->second.integrity_size)
+                                              : read_file_bytes(it->second.integrity_file_path);
+    const auto key = derive_integrity_key(module_id);
+    const auto expected = compute_integrity_tag(key, module_id, start_pc, current_bytes);
+    if (expected != it->second.integrity_tag) {
+      emit_audit("jit_cache_integrity_failure",
+                 "module=" + std::to_string(module_id) + " pc=" + std::to_string(start_pc), start_pc);
+      cache.used -= it->second.code_size;
+      cache.cooldown_entries.insert(start_pc);
+      cache.entries.erase(it);
       return nullptr;
     }
     it->second.lru_tick = ++cache.lru_clock;
@@ -575,6 +689,8 @@ struct Vm1Jit::Impl {
     entry.dl_handle = handle;
     entry.c_source_path = c_path;
     entry.c_so_path = so_path;
+    entry.integrity_file_path = so_path;
+    entry.integrity_size = entry.code_size;
     return entry;
 #endif
   }
@@ -629,6 +745,8 @@ struct Vm1Jit::Impl {
     entry.code_region = region;
     entry.code_region_size = alloc_size;
     entry.trace_heap = trace ? pcs_copy : nullptr;
+    entry.integrity_ptr = region;
+    entry.integrity_size = alloc_size;
     return entry;
 #else
     (void)module;
@@ -744,8 +862,11 @@ JitEntry Vm1Jit::compile_if_needed(const Vm1Module& module, std::uint32_t block_
     return nullptr;
   }
   auto& cache = impl_->module_cache(module.id());
-  if (auto* ready = impl_->find_ready_entry(cache, block_start_pc, hit_count); ready != nullptr) {
+  if (auto* ready = impl_->find_ready_entry(cache, module.id(), block_start_pc, hit_count); ready != nullptr) {
     return ready->fn;
+  }
+  if (cache.cooldown_entries.find(block_start_pc) != cache.cooldown_entries.end()) {
+    return nullptr;
   }
   if (cache.entries.find(block_start_pc) != cache.entries.end()) {
     return nullptr;
@@ -756,6 +877,12 @@ JitEntry Vm1Jit::compile_if_needed(const Vm1Module& module, std::uint32_t block_
     entry.stats.compile_count = 1;
     entry.stats.trace = false;
     entry.stats.code_size = entry.code_size;
+    {
+      std::vector<std::uint8_t> bytes = entry.integrity_ptr != nullptr ? snapshot_bytes(entry.integrity_ptr, entry.integrity_size)
+                                                                       : read_file_bytes(entry.integrity_file_path);
+      const auto key = derive_integrity_key(module.id());
+      entry.integrity_tag = compute_integrity_tag(key, module.id(), block_start_pc, bytes);
+    }
     impl_->evict_if_needed(cache, module.id(), entry.code_size);
     entry.lru_tick = ++cache.lru_clock;
     cache.used += entry.code_size;
@@ -815,6 +942,12 @@ void Vm1Jit::record_trace_observation(const Vm1Module& module, const std::vector
     entry.stats.compile_count = 1;
     entry.stats.trace = true;
     entry.stats.code_size = entry.code_size;
+    {
+      std::vector<std::uint8_t> bytes = entry.integrity_ptr != nullptr ? snapshot_bytes(entry.integrity_ptr, entry.integrity_size)
+                                                                       : read_file_bytes(entry.integrity_file_path);
+      const auto key = derive_integrity_key(module.id());
+      entry.integrity_tag = compute_integrity_tag(key, module.id(), start, bytes);
+    }
     impl_->evict_if_needed(cache, module.id(), entry.code_size);
     if (existing != cache.entries.end()) {
       cache.used -= existing->second.code_size;
@@ -881,6 +1014,29 @@ std::size_t Vm1Jit::module_cache_bytes(std::uint64_t module_id) const {
   std::lock_guard<std::mutex> lock(impl_->mutex);
   auto mod_it = impl_->modules.find(module_id);
   return mod_it == impl_->modules.end() ? 0u : mod_it->second.used;
+}
+
+
+bool Vm1Jit::has_entry(std::uint64_t module_id, std::uint32_t block_start_pc) const {
+  std::lock_guard<std::mutex> lock(impl_->mutex);
+  auto mod_it = impl_->modules.find(module_id);
+  return mod_it != impl_->modules.end() && mod_it->second.entries.find(block_start_pc) != mod_it->second.entries.end();
+}
+
+bool Vm1Jit::debug_patch_code_byte(std::uint64_t module_id, std::uint32_t block_start_pc, std::size_t offset, std::uint8_t value) {
+  std::lock_guard<std::mutex> lock(impl_->mutex);
+  auto mod_it = impl_->modules.find(module_id);
+  if (mod_it == impl_->modules.end()) {
+    return false;
+  }
+  auto entry_it = mod_it->second.entries.find(block_start_pc);
+  if (entry_it == mod_it->second.entries.end()) {
+    return false;
+  }
+  if (entry_it->second.integrity_ptr != nullptr) {
+    return patch_memory_byte(entry_it->second.integrity_ptr, entry_it->second.integrity_size, offset, value);
+  }
+  return patch_file_byte(entry_it->second.integrity_file_path, offset, value);
 }
 
 void Vm1Jit::reset_for_tests() {

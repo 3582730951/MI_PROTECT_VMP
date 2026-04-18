@@ -26,6 +26,16 @@ std::uint64_t entry_score(const ProfileEntry& entry) {
 
 }  // namespace
 
+void HotScheduler::set_mode(HotSchedulerMode mode) noexcept {
+  std::lock_guard<std::mutex> lock(mutex_);
+  mode_ = mode;
+}
+
+HotSchedulerMode HotScheduler::mode() const noexcept {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return mode_;
+}
+
 const char* to_string(ScheduleActionKind kind) noexcept {
   switch (kind) {
     case ScheduleActionKind::jit_compile_now: return "jit_compile_now";
@@ -38,10 +48,25 @@ const char* to_string(ScheduleActionKind kind) noexcept {
   return "unknown";
 }
 
+const char* to_string(HotSchedulerMode mode) noexcept {
+  switch (mode) {
+    case HotSchedulerMode::normal: return "normal";
+    case HotSchedulerMode::conservative: return "conservative";
+  }
+  return "normal";
+}
+
 std::vector<ScheduleAction> HotScheduler::make_actions(const OfflineProfile& fused_profile,
                                                        const HotRecorderSnapshot& online,
                                                        const SchedulerInput& input,
                                                        RuntimeState* runtime_state) const {
+  auto local_input = input;
+  if (mode() == HotSchedulerMode::conservative) {
+    local_input.jit_hot_threshold = std::max<std::uint64_t>(local_input.jit_hot_threshold, 512);
+    local_input.trace_stitch_threshold = std::max<std::uint64_t>(local_input.trace_stitch_threshold, 128);
+    local_input.warmup_importance_threshold = 2.0;
+  }
+
   std::vector<ScheduleAction> actions;
   std::map<std::uint64_t, double> module_heat;
   double total_heat = 0.0;
@@ -51,11 +76,11 @@ std::vector<ScheduleAction> HotScheduler::make_actions(const OfflineProfile& fus
     total_heat += heat;
   }
 
-  for (const auto& [module_id, state] : input.modules) {
+  for (const auto& [module_id, state] : local_input.modules) {
     const double share = total_heat == 0.0 ? 0.0 : (module_heat[module_id] / total_heat);
-    const auto desired = static_cast<std::size_t>(std::llround(static_cast<double>(input.min_budget_bytes) +
-                                                               share * static_cast<double>(input.max_budget_bytes - input.min_budget_bytes)));
-    const auto bounded = std::max(input.min_budget_bytes, std::min(input.max_budget_bytes, desired));
+    const auto desired = static_cast<std::size_t>(std::llround(static_cast<double>(local_input.min_budget_bytes) +
+                                                               share * static_cast<double>(local_input.max_budget_bytes - local_input.min_budget_bytes)));
+    const auto bounded = std::max(local_input.min_budget_bytes, std::min(local_input.max_budget_bytes, desired));
     if (state.current_budget_bytes != bounded) {
       actions.push_back({ScheduleActionKind::cache_resize, module_id, 0, bounded});
     }
@@ -67,22 +92,22 @@ std::vector<ScheduleAction> HotScheduler::make_actions(const OfflineProfile& fus
     if (it == coldest.end() || entry_score(entry) < entry_score(it->second)) {
       coldest[entry.module_id] = entry;
     }
-    if (entry.hot_class >= 2 || entry.hits >= input.jit_hot_threshold) {
+    if (entry.hot_class >= 2 || entry.hits >= local_input.jit_hot_threshold) {
       actions.push_back({ScheduleActionKind::jit_compile_now, entry.module_id, entry.pc, entry.hits});
-    } else if (online.uptime_seconds < 60.0 && entry.importance >= input.warmup_importance_threshold) {
+    } else if (online.uptime_seconds < 60.0 && entry.importance >= local_input.warmup_importance_threshold) {
       actions.push_back({ScheduleActionKind::warmup_kick, entry.module_id, entry.pc, entry.hits});
     }
   }
 
-  for (const auto& [module_id, state] : input.modules) {
+  for (const auto& [module_id, state] : local_input.modules) {
     auto it = coldest.find(module_id);
-    if (it != coldest.end() && state.current_cache_bytes >= state.current_budget_bytes && it->second.hits <= input.evict_cold_threshold) {
+    if (it != coldest.end() && state.current_cache_bytes >= state.current_budget_bytes && it->second.hits <= local_input.evict_cold_threshold) {
       actions.push_back({ScheduleActionKind::jit_evict, module_id, it->second.pc, it->second.hits});
     }
   }
 
   for (const auto& [edge, count] : online.trace_edges) {
-    if (count >= input.trace_stitch_threshold) {
+    if (count >= local_input.trace_stitch_threshold) {
       actions.push_back({ScheduleActionKind::trace_stitch, edge.module_id, edge.from_pc, edge.to_pc});
     } else if (count <= 1) {
       actions.push_back({ScheduleActionKind::trace_break, edge.module_id, edge.from_pc, edge.to_pc});
@@ -90,11 +115,12 @@ std::vector<ScheduleAction> HotScheduler::make_actions(const OfflineProfile& fus
   }
 
   if (actions.empty()) {
-    emit(runtime_state, "scheduler_skipped", "reason=no_actions");
+    emit(runtime_state, "scheduler_skipped", std::string("reason=no_actions mode=") + to_string(mode()));
   } else {
     for (const auto& action : actions) {
       std::ostringstream oss;
-      oss << "kind=" << to_string(action.kind) << " module=" << action.module_id << " pc=" << action.pc << " arg=" << action.arg;
+      oss << "kind=" << to_string(action.kind) << " module=" << action.module_id << " pc=" << action.pc << " arg=" << action.arg
+          << " mode=" << to_string(mode());
       emit(runtime_state, "scheduler_decision", oss.str(), action.pc);
     }
   }

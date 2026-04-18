@@ -1,4 +1,8 @@
 #include <cstdlib>
+#include <filesystem>
+
+#include <vmp/runtime/audit/audit.h>
+#include <vmp/runtime/state/state.h>
 
 #if defined(VMP_SELFTEST_WINDOWS)
 #include <vmp/loader/windows/windows_loader.h>
@@ -11,6 +15,11 @@
 #endif
 
 int main() {
+  const auto audit_path = std::filesystem::temp_directory_path() / "vmp_loader_selftest.log";
+  vmp::runtime::audit::AuditWriter writer(audit_path);
+  auto& state = vmp::runtime::state::RuntimeState::instance();
+  state.shutdown();
+  (void)state.init_once(&writer, {"selftest", "vmp-loader-selftest", false});
 #if defined(VMP_SELFTEST_WINDOWS)
   vmp_windows_loader_force_link();
   (void)vmp::loader::windows::LoaderFacade{}.status();

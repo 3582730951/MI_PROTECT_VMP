@@ -1,19 +1,23 @@
 #include <vmp/runtime/audit/reaction.h>
 
-#include <random>
+#include <cstdlib>
 #include <thread>
 
 namespace vmp::runtime::audit {
+
+bool runtime_state_bridge(const AnalysisEventRecord&, ReactionPolicy) noexcept __attribute__((weak));
+bool runtime_state_bridge(const AnalysisEventRecord&, ReactionPolicy) noexcept { return false; }
+
 namespace {
 
 std::chrono::milliseconds default_delay() noexcept {
-  try {
-    thread_local std::mt19937_64 rng{std::random_device{}()};
-    std::uniform_int_distribution<int> distribution(1000, 3000);
-    return std::chrono::milliseconds(distribution(rng));
-  } catch (...) {
-    return std::chrono::milliseconds(1000);
+  if (const char* raw = std::getenv("VMP_TERMINATE_GRACE_MS"); raw != nullptr && *raw != '\0') {
+    try {
+      return std::chrono::milliseconds(std::stoul(raw));
+    } catch (...) {
+    }
   }
+  return std::chrono::milliseconds(500);
 }
 
 void default_exit() noexcept { std::quick_exit(0); }
@@ -48,32 +52,20 @@ void ReactionDispatcher::dispatch(const AnalysisEventRecord& record) noexcept { 
 
 void ReactionDispatcher::dispatch(const AnalysisEventRecord& record, ReactionPolicy policy) noexcept {
   try {
-    switch (policy) {
-      case ReactionPolicy::audit_only:
-        writer.append(record);
-        break;
-      case ReactionPolicy::audit_then_delayed_exit: {
-        writer.append(record);
-        auto delay = delay_selector ? delay_selector() : std::chrono::milliseconds(1000);
-        auto exit_copy = exit_fn;
-        if (scheduler) {
-          scheduler(delay, [exit_copy]() mutable {
-            if (exit_copy) {
-              exit_copy();
-            }
-          });
-        }
-        break;
+    writer.append(record);
+    if (policy == ReactionPolicy::audit_only || policy == ReactionPolicy::log) {
+      return;
+    }
+    writer.flush();
+    const bool handled = runtime_state_bridge(record, policy);
+    if (!handled && policy == ReactionPolicy::audit_then_delayed_exit) {
+      auto delay = delay_selector ? delay_selector() : std::chrono::milliseconds(500);
+      auto exit_copy = exit_fn;
+      if (scheduler) {
+        scheduler(delay, [exit_copy]() mutable { if (exit_copy) exit_copy(); });
+      } else if (exit_copy) {
+        exit_copy();
       }
-      case ReactionPolicy::log:
-        writer.append(record);
-        break;
-      case ReactionPolicy::degrade:
-        // TODO(subtask_04): integrate degrade-state-machine behavior.
-        break;
-      case ReactionPolicy::decoy_terminate:
-        // TODO(subtask_04): integrate decoy-terminate-state-machine behavior.
-        break;
     }
   } catch (...) {
   }

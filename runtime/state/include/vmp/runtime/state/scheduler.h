@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <mutex>
 #include <utility>
 #include <vector>
 
@@ -20,6 +21,11 @@ class Vm2Context;
 namespace vmp::runtime::state {
 
 class RuntimeState;
+
+enum class HotSchedulerMode {
+  normal,
+  conservative,
+};
 
 enum class ScheduleActionKind {
   jit_compile_now,
@@ -60,6 +66,9 @@ struct SchedulerBindings {
 
 class HotScheduler {
  public:
+  void set_mode(HotSchedulerMode mode) noexcept;
+  HotSchedulerMode mode() const noexcept;
+
   std::vector<ScheduleAction> make_actions(const OfflineProfile& fused_profile,
                                            const HotRecorderSnapshot& online,
                                            const SchedulerInput& input,
@@ -68,8 +77,13 @@ class HotScheduler {
   void apply_actions(const std::vector<ScheduleAction>& actions,
                      const SchedulerBindings& bindings,
                      RuntimeState* runtime_state = nullptr) const;
+
+ private:
+  mutable std::mutex mutex_;
+  HotSchedulerMode mode_ = HotSchedulerMode::normal;
 };
 
 const char* to_string(ScheduleActionKind kind) noexcept;
+const char* to_string(HotSchedulerMode mode) noexcept;
 
 }  // namespace vmp::runtime::state

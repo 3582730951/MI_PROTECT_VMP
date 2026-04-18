@@ -1,5 +1,7 @@
 #pragma once
 
+#include <vmp/runtime/integrity/region.h>
+
 namespace vmp::runtime::integrity {
 
 struct Facade {

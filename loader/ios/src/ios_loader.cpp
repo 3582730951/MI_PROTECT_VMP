@@ -9,6 +9,7 @@
 #include <vmp/loader/common/platform_caps.h>
 #include <vmp/runtime/audit/audit.h>
 #include <vmp/runtime/audit/placeholder.h>
+#include <vmp/runtime/integrity/integrity.h>
 #include <vmp/runtime/state/state.h>
 #include <vmp/runtime/strings/cipher.h>
 #include <vmp/runtime/strings/keyctx.h>
@@ -20,6 +21,7 @@ using vmp::runtime::audit::AuditWriter;
 namespace common = vmp::loader::common;
 namespace state = vmp::runtime::state;
 namespace strings = vmp::runtime::strings;
+namespace integrity = vmp::runtime::integrity;
 
 std::once_flag g_loader_once;
 std::unique_ptr<AuditWriter> g_audit;
@@ -41,6 +43,28 @@ void append_event(AuditWriter& writer, std::string event_type, std::string note)
   writer.append(record);
   writer.flush();
 }
+
+void register_loader_regions(const char* loader_name, const void* code_base, std::size_t code_size,
+                             const void* ro_base, std::size_t ro_size) {
+  try {
+    integrity::ProtectedRegion code{};
+    code.name = std::string(loader_name) + ".code";
+    code.base = code_base;
+    code.size = code_size;
+    code.flags = 0x1;
+    integrity::RegionRegistry::instance().register_region(code);
+
+    integrity::ProtectedRegion ro{};
+    ro.name = std::string(loader_name) + ".rodata";
+    ro.base = ro_base;
+    ro.size = ro_size;
+    ro.flags = 0x2;
+    integrity::RegionRegistry::instance().register_region(ro);
+  } catch (...) {
+  }
+}
+
+void register_optional_rewriter_regions() {}
 
 void load_key_context_if_present() {
   const char* hex = std::getenv("VMP_STRING_MASTER_KEY");
@@ -73,6 +97,8 @@ void perform_ios_init() {
     append_event(*g_audit, "jit_execmem_unavailable", "ios capability gate forcing interpreter-only fallback");
   }
 
+  { const auto salt = fixed_loader_salt(); register_loader_regions("ios", reinterpret_cast<const void*>(&perform_ios_init), 128, salt.data(), salt.size()); }
+  register_optional_rewriter_regions();
   append_event(*g_audit, "loader_init", "ios_loader_init");
   load_key_context_if_present();
   vmp::runtime::audit::initialize_placeholder_hook_once();

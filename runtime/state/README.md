@@ -1,95 +1,64 @@
 # runtime/state
 
-- 对应 plan：§7.5、§8.1-§8.4、§9、§16
-- 本轮状态：profile-loader-online-fusion-scheduler-ready
+- 对应 plan：§7.5、§13、§14、§16
+- 当前状态：state-machine-finalized
 
-## 提供能力
+## 状态机
 
-### 1. 离线画像格式
-- 头文件：`runtime/state/include/vmp/runtime/state/profile.h`
-- 结构：
-  - `ProfileEntry { module_id, pc, hits, hot_class, importance }`
-  - `OfflineProfile { version, source_seed, entries, meta }`
-- 序列化：JSON，顶层 schema 固定为 `vp1`
-- 约束：
-  - `importance` 必须在 `[0, 1]`
-  - `hot_class` 必须在 `[0, 3]`
-  - `(module_id, pc)` 不允许重复
-  - 未知字段严格拒绝
+```text
+Init --init_done--> Ready
+Ready --env_anomaly|integrity_failed|detection_event--> Degraded
+Ready --hw_breakpoint--> Terminating
+Ready --shutdown_requested--> Terminating
+Ready --hot_threshold_reached|audit_event|key_rotated--> Ready
+Degraded --further_failure|timeout--> Terminating
+Degraded --shutdown_requested--> Terminating
+```
 
-### 2. 在线记录器
-- 头文件：`runtime/state/include/vmp/runtime/state/hot_recorder.h`
-- `HotRecorder` 为线程安全累加器，记录：
-  - 函数进入
-  - 基本块进入
-  - trace 边
-  - JIT hit / miss
-  - 域切换
-  - 敏感数据瞬时明文访问成本
-- `snapshot()` 返回不可变值拷贝，供调度器消费。
+> Owner override（2026-04-18）：`hw_breakpoint` 不经过 `Degraded`，执行 `audit_then_delayed_exit`，即先审计、再延迟进入 `Terminating`。
 
-### 3. 启动加载与画像融合
-- `RuntimeState::init_once(...)`：
-  - 若设置 `VMP_OFFLINE_PROFILE`，启动时自动加载离线画像
-  - 成功写入 `profile_loaded` 审计事件
-  - 失败写入 `profile_load_failed` 审计事件
-- 融合规则：
-  - 默认在线权重为 `0.4`
-  - 运行时间不足 `60s` 时在线权重强制为 `0`
-  - 可通过 `VMP_PROFILE_ONLINE_WEIGHT` 覆盖默认值
-- 在线修正**只能**影响：
-  - JIT 排序
-  - cache 大小分配
-  - trace stitching / break
-  - warmup 时机
-- 在线修正**不能**改变：
-  - `Policy IR` 中的 `protection_domain`
-  - `sensitivity_level`
-  - `plaintext_budget`
-  - `integrity_level`
-  - `reaction_policy`
+## 统一事件
+- `env_anomaly`
+- `integrity_failed`
+- `hot_threshold_reached`
+- `audit_event`
+- `key_rotated`
+- `detection_event`
+- `shutdown_requested`
+- `hw_breakpoint`
+- 内部事件：`init_done` / `further_failure` / `timeout`
 
-### 4. 热点调度器
-- 头文件：`runtime/state/include/vmp/runtime/state/scheduler.h`
-- `HotScheduler` 输出 `ScheduleAction`：
-  - `jit_compile_now`
-  - `jit_evict`
-  - `trace_stitch`
-  - `trace_break`
-  - `cache_resize`
-  - `warmup_kick`
-- 每模块预算默认约束：`[1 MiB, 16 MiB]`
-- 调度器可通过既有 `Vm1Jit` / `Vm2Jit` hook 应用决策，不引入新的大接口面。
+## 进入动作
+### Enter Degraded
+- 使所有 JIT 缓存失效
+- 全局 `plaintext_budget` 提升为 `none`（拒绝新的瞬时解密）
+- HotScheduler 切到 `conservative`
 
-### 5. 审计事件
-- `profile_loaded`
-- `profile_load_failed`
-- `scheduler_decision`
-- `scheduler_skipped`
-- `trace_stitch_applied`
-- `cache_resize`
+### Enter Terminating
+- 立刻写 `state_transition`
+- 写 `terminating_grace_start`
+- grace 到期后：
+  - 失效 JIT
+  - 擦除全部 `KeyContext` 派生子密钥槽
+  - 执行已注册 wipe callback
+  - 写 `terminating_done`
+  - `exit(0)`（默认 `VMP_TERMINATE_GRACE_MS=500`，可配置）
+
+## Snapshot / API
+- `RuntimeState::init_once(audit*, config)`
+- `RuntimeState::current_state()`
+- `RuntimeState::observe(kind, payload)`
+- `RuntimeState::on_transition(cb)`
+- `RuntimeState::get_hot_scheduler()`
+- `RuntimeState::snapshot()`
+
+## 审计事件
+- `integrity_failed`
+- `state_transition`
+- `jit_cache_integrity_failure`
+- `terminating_grace_start`
+- `terminating_done`
+- 既有 profile / scheduler 事件仍保留
 
 ## CLI
-
-### `vmp-protect`
-- `--profile-out <path>`：输出基线画像 JSON（schema `vp1`）
-
-### `vmp-vm1-run` / `vmp-vm2-run`
-- `--profile <path>`：运行前加载离线画像
-- `--profile-out <path>`：运行后导出在线状态快照为画像 JSON
-
-### `vmp-profile-tool`
-- `merge <a.json> <b.json> --output <merged.json>`
-- `diff <a.json> <b.json>`
-- `validate <p.json>`
-
-## 环境变量
-- `VMP_OFFLINE_PROFILE`：启动时自动加载的离线画像路径
-- `VMP_PROFILE_ONLINE_WEIGHT`：在线修正权重，默认 `0.4`
-
-## 测试覆盖
-- round-trip / validator / 并发 recorder
-- 融合不改 Policy IR 硬约束
-- 调度器 compile / evict / resize
-- 审计记录
-- `vmp-profile-tool` merge / diff / validate 端到端
+- `vmp-state-probe --event integrity_failed:region_X|hw_breakpoint|env_anomaly|shutdown [--audit path] [--no-exit]`

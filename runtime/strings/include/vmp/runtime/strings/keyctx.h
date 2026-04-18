@@ -3,6 +3,7 @@
 #include <array>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -42,14 +43,21 @@ class DerivedKey final {
 
 class KeyContext {
  public:
+  struct SlotBook;
   KeyContext(MasterKeyHandle master_key_handle, std::vector<std::uint8_t> salt);
 
   DerivedKey derive_subkey(std::string_view purpose_tag) const;
+  void wipe_cached_subkeys() const noexcept;
+  bool debug_cached_subkeys_zeroed() const noexcept;
   const std::vector<std::uint8_t>& salt() const noexcept { return salt_; }
 
  private:
   MasterKeyHandle master_key_handle_;
   std::vector<std::uint8_t> salt_;
+  std::shared_ptr<SlotBook> slot_book_;
 };
+
+void wipe_all_key_context_subkeys() noexcept;
+bool debug_all_key_context_slots_zeroed() noexcept;
 
 }  // namespace vmp::runtime::strings

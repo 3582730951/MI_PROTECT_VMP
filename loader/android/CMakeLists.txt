@@ -1,6 +1,6 @@
 add_library(vmp_loader_android SHARED
   ${CMAKE_CURRENT_SOURCE_DIR}/src/android_loader.cpp)
-target_link_libraries(vmp_loader_android PUBLIC vmp_build_options vmp_loader_common vmp_runtime_state vmp_runtime_audit vmp_runtime_strings)
+target_link_libraries(vmp_loader_android PUBLIC vmp_build_options vmp_loader_common vmp_runtime_state vmp_runtime_audit vmp_runtime_strings vmp_runtime_integrity)
 target_include_directories(vmp_loader_android PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 set_target_properties(vmp_loader_android PROPERTIES
   OUTPUT_NAME vmp_loader_android

@@ -51,6 +51,9 @@ std::vector<std::uint8_t> hkdf_expand_sha256(const std::vector<std::uint8_t>& pr
                                              const std::vector<std::uint8_t>& info,
                                              std::size_t out_len);
 
+void set_global_plaintext_budget_lock(bool locked) noexcept;
+bool global_plaintext_budget_locked() noexcept;
+
 std::vector<std::uint8_t> chacha20_xor(const std::vector<std::uint8_t>& key,
                                        const Nonce& nonce,
                                        std::uint32_t counter,

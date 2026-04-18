@@ -214,6 +214,25 @@ vmp_add_runtime_state_test(scheduler_evicts_cold ${CMAKE_CURRENT_SOURCE_DIR}/run
 vmp_add_runtime_state_test(scheduler_caches_resize_within_bounds ${CMAKE_CURRENT_SOURCE_DIR}/runtime_state/scheduler_caches_resize_within_bounds.cpp)
 vmp_add_runtime_state_test(audit_decision_logged ${CMAKE_CURRENT_SOURCE_DIR}/runtime_state/audit_decision_logged.cpp)
 
+
+function(vmp_add_runtime_state_machine_test target source)
+  add_executable(${target} ${source})
+  target_link_libraries(${target} PRIVATE vmp_runtime_state vmp_runtime_audit vmp_runtime_strings vmp_runtime_integrity vmp_runtime_jit vmp_runtime_vm1 vmp_policy nlohmann_json::nlohmann_json)
+  set_target_properties(${target} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
+  add_test(NAME ${target} COMMAND $<TARGET_FILE:${target}>)
+  set_tests_properties(${target} PROPERTIES PASS_REGULAR_EXPRESSION "${target} OK")
+endfunction()
+
+vmp_add_runtime_state_machine_test(integrity_register_and_verify_ok ${CMAKE_CURRENT_SOURCE_DIR}/runtime_state_machine/integrity_register_and_verify_ok.cpp)
+vmp_add_runtime_state_machine_test(integrity_tamper_detected ${CMAKE_CURRENT_SOURCE_DIR}/runtime_state_machine/integrity_tamper_detected.cpp)
+vmp_add_runtime_state_machine_test(jit_cache_integrity_failure_vm1 ${CMAKE_CURRENT_SOURCE_DIR}/runtime_state_machine/jit_cache_integrity_failure_vm1.cpp)
+vmp_add_runtime_state_machine_test(state_machine_transition_table ${CMAKE_CURRENT_SOURCE_DIR}/runtime_state_machine/state_machine_transition_table.cpp)
+vmp_add_runtime_state_machine_test(hw_breakpoint_goes_to_terminating ${CMAKE_CURRENT_SOURCE_DIR}/runtime_state_machine/hw_breakpoint_goes_to_terminating.cpp)
+vmp_add_runtime_state_machine_test(degraded_raises_plaintext_budget ${CMAKE_CURRENT_SOURCE_DIR}/runtime_state_machine/degraded_raises_plaintext_budget.cpp)
+vmp_add_runtime_state_machine_test(terminating_invalidates_jit_and_wipes_keys ${CMAKE_CURRENT_SOURCE_DIR}/runtime_state_machine/terminating_invalidates_jit_and_wipes_keys.cpp)
+
+add_test(NAME vmp_state_probe_cli COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/runtime_state_machine/vmp_state_probe_cli.py $<TARGET_FILE:vmp-state-probe>)
+set_tests_properties(vmp_state_probe_cli PROPERTIES PASS_REGULAR_EXPRESSION "vmp_state_probe_cli OK")
 add_test(NAME vmp_profile_tool_merge_diff_validate
   COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/runtime_state/vmp_profile_tool_merge_diff_validate.py
           $<TARGET_FILE:vmp-profile-tool>)

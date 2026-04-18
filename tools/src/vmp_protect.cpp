@@ -16,6 +16,7 @@
 #include <vmp/runtime/audit/detector.h>
 #include <vmp/runtime/audit/reaction.h>
 #include <vmp/runtime/state/profile.h>
+#include <vmp/runtime/state/state.h>
 
 #include "string_protect_common.h"
 
@@ -303,7 +304,14 @@ int run_detector_selftest() {
   dispatcher.set_scheduler([](std::chrono::milliseconds, std::function<void()> fn) noexcept { fn(); });
 
   audit::NullDetector detector;
-  detector.set_sink([&dispatcher](const audit::AnalysisEventRecord& record) { dispatcher.dispatch(record); });
+  detector.set_sink([&dispatcher](const audit::AnalysisEventRecord& record) {
+    vmp::runtime::state::RuntimeEventPayload payload;
+    payload.name = record.event_type;
+    payload.note = record.context_note;
+    payload.program_counter = record.program_counter;
+    vmp::runtime::state::RuntimeState::instance().observe(vmp::runtime::state::RuntimeEventKind::detection_event, payload);
+    dispatcher.dispatch(record);
+  });
   detector.start();
 
   detector.fire(audit::make_event("hw_breakpoint", "selftest_hw", 0x1111, "vm_core", "sensitive_entry", 4,

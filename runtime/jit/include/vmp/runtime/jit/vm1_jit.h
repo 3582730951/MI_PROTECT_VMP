@@ -72,6 +72,8 @@ class Vm1Jit {
   Vm1JitEntryStats entry_stats(std::uint64_t module_id, std::uint32_t block_start_pc) const;
   std::size_t module_entry_count(std::uint64_t module_id) const;
   std::size_t module_cache_bytes(std::uint64_t module_id) const;
+  bool has_entry(std::uint64_t module_id, std::uint32_t block_start_pc) const;
+  bool debug_patch_code_byte(std::uint64_t module_id, std::uint32_t block_start_pc, std::size_t offset, std::uint8_t value);
 
   void reset_for_tests();
 

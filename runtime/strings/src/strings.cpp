@@ -19,6 +19,7 @@ namespace vmp::runtime::strings {
 namespace {
 
 thread_local StringPool* g_current_pool = nullptr;
+std::atomic<bool> g_plaintext_budget_lock{false};
 
 constexpr std::array<std::uint32_t, 8> kSha256Init{{
     0x6a09e667u, 0xbb67ae85u, 0x3c6ef372u, 0xa54ff53au,
@@ -176,6 +177,10 @@ std::vector<std::uint8_t> hex_decode(const std::string& hex) {
   }
   return out;
 }
+
+void set_global_plaintext_budget_lock(bool locked) noexcept { g_plaintext_budget_lock.store(locked, std::memory_order_release); }
+
+bool global_plaintext_budget_locked() noexcept { return g_plaintext_budget_lock.load(std::memory_order_acquire); }
 
 Nonce u32_to_nonce(std::uint32_t value) noexcept {
   Nonce nonce{};
@@ -463,6 +468,9 @@ TransientView StringPool::decrypt(std::uint32_t string_id) const {
   const auto it = idx_.find(string_id);
   if (it == idx_.end()) {
     fail("strings: string id not found", "string_pool_error");
+  }
+  if (global_plaintext_budget_locked()) {
+    fail("strings: global plaintext budget lock forbids decrypt", "plaintext_budget_violation");
   }
   if (it->second.plaintext_budget == vmp::policy::PlaintextBudget::none) {
     fail("strings: plaintext_budget none forbids decrypt", "plaintext_budget_violation");

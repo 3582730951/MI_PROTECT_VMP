@@ -1,5 +1,4 @@
-vmp_add_placeholder_library(vmp_runtime_integrity
-  HEADER ${CMAKE_CURRENT_SOURCE_DIR}/include/vmp/runtime/integrity/integrity.h
-  SOURCE ${CMAKE_CURRENT_SOURCE_DIR}/src/integrity.cpp
-  INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_link_libraries(vmp_runtime_integrity PUBLIC vmp_policy)
+add_library(vmp_runtime_integrity STATIC
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/integrity.cpp)
+target_link_libraries(vmp_runtime_integrity PUBLIC vmp_build_options vmp_policy vmp_runtime_strings vmp_runtime_state)
+target_include_directories(vmp_runtime_integrity PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
