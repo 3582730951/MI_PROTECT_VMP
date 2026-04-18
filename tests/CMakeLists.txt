@@ -541,3 +541,50 @@ set_tests_properties(rewriter_unknown_format_rejected PROPERTIES PASS_REGULAR_EX
 add_test(NAME rewriter_policy_mismatch
   COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/backends_rewriter/rewriter_policy_mismatch.py $<TARGET_FILE:vmp-protect> ${CMAKE_BINARY_DIR} ${CMAKE_SOURCE_DIR})
 set_tests_properties(rewriter_policy_mismatch PROPERTIES PASS_REGULAR_EXPRESSION "rewriter_policy_mismatch OK")
+
+# arch lifting tests
+add_executable(x86_lift_basic ${CMAKE_CURRENT_SOURCE_DIR}/arch/x86_lift_basic.cpp)
+target_link_libraries(x86_lift_basic PRIVATE vmp_arch_x86 vmp_runtime_vm1)
+set_target_properties(x86_lift_basic PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
+add_test(NAME x86_lift_basic COMMAND $<TARGET_FILE:x86_lift_basic>)
+set_tests_properties(x86_lift_basic PROPERTIES PASS_REGULAR_EXPRESSION "x86_lift_basic OK")
+
+add_executable(x64_lift_basic_sysv ${CMAKE_CURRENT_SOURCE_DIR}/arch/x64_lift_basic_sysv.cpp)
+target_link_libraries(x64_lift_basic_sysv PRIVATE vmp_arch_x64 vmp_runtime_vm1 vmp_runtime_vm2)
+set_target_properties(x64_lift_basic_sysv PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
+add_test(NAME x64_lift_basic_sysv COMMAND $<TARGET_FILE:x64_lift_basic_sysv>)
+set_tests_properties(x64_lift_basic_sysv PROPERTIES PASS_REGULAR_EXPRESSION "x64_lift_basic_sysv OK")
+
+add_executable(x64_lift_basic_msvc ${CMAKE_CURRENT_SOURCE_DIR}/arch/x64_lift_basic_msvc.cpp)
+target_link_libraries(x64_lift_basic_msvc PRIVATE vmp_arch_x64 vmp_runtime_vm1 vmp_runtime_vm2)
+set_target_properties(x64_lift_basic_msvc PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
+add_test(NAME x64_lift_basic_msvc COMMAND $<TARGET_FILE:x64_lift_basic_msvc>)
+set_tests_properties(x64_lift_basic_msvc PROPERTIES PASS_REGULAR_EXPRESSION "x64_lift_basic_msvc OK")
+
+add_executable(arm_lift_basic ${CMAKE_CURRENT_SOURCE_DIR}/arch/arm_lift_basic.cpp)
+target_link_libraries(arm_lift_basic PRIVATE vmp_arch_arm vmp_runtime_vm1)
+set_target_properties(arm_lift_basic PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
+add_test(NAME arm_lift_basic COMMAND $<TARGET_FILE:arm_lift_basic>)
+set_tests_properties(arm_lift_basic PROPERTIES PASS_REGULAR_EXPRESSION "arm_lift_basic OK")
+
+add_executable(arm64_lift_basic ${CMAKE_CURRENT_SOURCE_DIR}/arch/arm64_lift_basic.cpp)
+target_link_libraries(arm64_lift_basic PRIVATE vmp_arch_arm64 vmp_runtime_vm1)
+set_target_properties(arm64_lift_basic PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
+add_test(NAME arm64_lift_basic COMMAND $<TARGET_FILE:arm64_lift_basic>)
+set_tests_properties(arm64_lift_basic PROPERTIES PASS_REGULAR_EXPRESSION "arm64_lift_basic OK")
+
+add_executable(lift_unsupported_diagnostic ${CMAKE_CURRENT_SOURCE_DIR}/arch/lift_unsupported_diagnostic.cpp)
+target_link_libraries(lift_unsupported_diagnostic PRIVATE vmp_arch_x64 vmp_runtime_vm1 vmp_runtime_vm2)
+set_target_properties(lift_unsupported_diagnostic PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
+add_test(NAME lift_unsupported_diagnostic COMMAND $<TARGET_FILE:lift_unsupported_diagnostic>)
+set_tests_properties(lift_unsupported_diagnostic PROPERTIES PASS_REGULAR_EXPRESSION "lift_unsupported_diagnostic OK")
+
+add_executable(lift_relocation_carrying ${CMAKE_CURRENT_SOURCE_DIR}/arch/lift_relocation_carrying.cpp)
+target_link_libraries(lift_relocation_carrying PRIVATE vmp_arch_x64 vmp_runtime_vm1 vmp_runtime_vm2)
+set_target_properties(lift_relocation_carrying PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
+add_test(NAME lift_relocation_carrying COMMAND $<TARGET_FILE:lift_relocation_carrying>)
+set_tests_properties(lift_relocation_carrying PROPERTIES PASS_REGULAR_EXPRESSION "lift_relocation_carrying OK")
+
+add_test(NAME rewriter_lift_integration_elf
+  COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/arch/rewriter_lift_integration_elf.py $<TARGET_FILE:vmp-protect> ${CMAKE_SOURCE_DIR} ${CMAKE_BINARY_DIR})
+set_tests_properties(rewriter_lift_integration_elf PROPERTIES PASS_REGULAR_EXPRESSION "rewriter_lift_integration_elf OK")

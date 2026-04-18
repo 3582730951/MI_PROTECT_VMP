@@ -3,10 +3,18 @@
 #include <map>
 #include <set>
 
+#include <nlohmann/json.hpp>
+
+#include <vmp/arch/arm/arm.h>
+#include <vmp/arch/arm64/arm64.h>
+#include <vmp/arch/x64/x64.h>
+#include <vmp/arch/x86/x86.h>
+
 #include "../internal/common.h"
 
 namespace vmp::backend::rewriter::formats::elf {
 namespace {
+using json = nlohmann::json;
 
 struct ParsedSection {
   std::string name;
@@ -24,6 +32,13 @@ struct ParsedElf {
   std::vector<Elf64_Phdr> phdrs;
   std::vector<ParsedSection> sections;
   std::vector<ParsedSymbol> symbols;
+};
+
+struct VmpCodeRecord {
+  std::uint64_t bundle_id = 0;
+  std::uint8_t domain = 1;  // 1 vm1, 2 vm2
+  std::string symbol;
+  std::vector<std::uint8_t> payload;
 };
 
 ParsedElf parse_bytes(const std::vector<std::uint8_t>& bytes) {
@@ -56,12 +71,8 @@ ParsedElf parse_bytes(const std::vector<std::uint8_t>& bytes) {
     out.sections.push_back(sec);
   }
   for (const auto& sec : out.sections) {
-    if (sec.shdr.sh_type != SHT_SYMTAB && sec.shdr.sh_type != SHT_DYNSYM) {
-      continue;
-    }
-    if (sec.shdr.sh_link >= out.sections.size() || sec.shdr.sh_entsize == 0) {
-      continue;
-    }
+    if (sec.shdr.sh_type != SHT_SYMTAB && sec.shdr.sh_type != SHT_DYNSYM) continue;
+    if (sec.shdr.sh_link >= out.sections.size() || sec.shdr.sh_entsize == 0) continue;
     const auto& strtab_hdr = out.sections[sec.shdr.sh_link].shdr;
     detail::ensure_size(bytes, strtab_hdr.sh_offset, strtab_hdr.sh_size, "elf strtab");
     std::vector<std::uint8_t> strtab(bytes.begin() + strtab_hdr.sh_offset, bytes.begin() + strtab_hdr.sh_offset + strtab_hdr.sh_size);
@@ -71,9 +82,7 @@ ParsedElf parse_bytes(const std::vector<std::uint8_t>& bytes) {
       ParsedSymbol sym;
       std::memcpy(&sym.sym, bytes.data() + sec.shdr.sh_offset + i * sec.shdr.sh_entsize, sizeof(Elf64_Sym));
       sym.name = sym.sym.st_name < strtab.size() ? detail::read_c_string(strtab, sym.sym.st_name) : std::string();
-      if (!sym.name.empty()) {
-        out.symbols.push_back(sym);
-      }
+      if (!sym.name.empty()) out.symbols.push_back(sym);
     }
   }
   return out;
@@ -89,17 +98,13 @@ std::optional<std::pair<ParsedSymbol, ParsedSection>> find_symbol(const ParsedEl
 }
 
 std::size_t symbol_file_offset(const ParsedSymbol& symbol, const ParsedSection& sec, std::uint64_t addend) {
-  if (symbol.sym.st_value < sec.shdr.sh_addr) {
-    throw std::runtime_error("rewriter: invalid ELF symbol address");
-  }
+  if (symbol.sym.st_value < sec.shdr.sh_addr) throw std::runtime_error("rewriter: invalid ELF symbol address");
   return static_cast<std::size_t>(sec.shdr.sh_offset + (symbol.sym.st_value - sec.shdr.sh_addr) + addend);
 }
 
 std::string infer_plaintext(const ParsedElf& elf, const ParsedSymbol& sym, const ParsedSection& sec, std::uint64_t addend) {
   const auto base = symbol_file_offset(sym, sec, addend);
-  if (base >= elf.bytes.size()) {
-    throw std::runtime_error("rewriter: invalid ELF symbol offset");
-  }
+  if (base >= elf.bytes.size()) throw std::runtime_error("rewriter: invalid ELF symbol offset");
   std::size_t limit = sym.sym.st_size > addend ? static_cast<std::size_t>(sym.sym.st_size - addend) : 0u;
   if (limit == 0) {
     while (base + limit < elf.bytes.size() && elf.bytes[base + limit] != 0) ++limit;
@@ -116,9 +121,7 @@ void zero_symbol(std::vector<std::uint8_t>& bytes, const ParsedSymbol& sym, cons
     while (base + count < bytes.size() && bytes[base + count] != 0) ++count;
     if (base + count < bytes.size()) ++count;
   }
-  if (base + count > bytes.size()) {
-    throw std::runtime_error("rewriter: ELF zero range out of bounds");
-  }
+  if (base + count > bytes.size()) throw std::runtime_error("rewriter: ELF zero range out of bounds");
   std::fill(bytes.begin() + static_cast<std::ptrdiff_t>(base), bytes.begin() + static_cast<std::ptrdiff_t>(base + count), 0);
 }
 
@@ -126,9 +129,7 @@ ElfContainer to_container(const ParsedElf& elf, const std::filesystem::path& pat
   ElfContainer out;
   out.source_path = path;
   out.bytes = elf.bytes;
-  for (const auto& sec : elf.sections) {
-    out.sections.push_back(SectionInfo{sec.name, sec.shdr.sh_addr, sec.shdr.sh_offset, sec.shdr.sh_size});
-  }
+  for (const auto& sec : elf.sections) out.sections.push_back(SectionInfo{sec.name, sec.shdr.sh_addr, sec.shdr.sh_offset, sec.shdr.sh_size});
   for (const auto& sym : elf.symbols) {
     std::string sec_name;
     if (sym.sym.st_shndx < elf.sections.size()) sec_name = elf.sections[sym.sym.st_shndx].name;
@@ -198,6 +199,66 @@ std::vector<std::uint8_t> rebuild_with_extra_sections(const ParsedElf& elf,
   return body;
 }
 
+std::vector<std::uint8_t> serialize_vmpcode(const std::vector<VmpCodeRecord>& records) {
+  std::vector<std::uint8_t> out{'V', 'M', 'P', 'C'};
+  detail::write_le(out, out.size(), records.size(), 4);
+  for (const auto& rec : records) {
+    detail::write_le(out, out.size(), rec.bundle_id, 8);
+    detail::write_le(out, out.size(), rec.domain, 1);
+    detail::write_le(out, out.size(), rec.symbol.size(), 4);
+    detail::write_le(out, out.size(), rec.payload.size(), 4);
+    out.insert(out.end(), rec.symbol.begin(), rec.symbol.end());
+    out.insert(out.end(), rec.payload.begin(), rec.payload.end());
+  }
+  return out;
+}
+
+std::vector<std::uint8_t> make_x64_sysv2_thunk(std::uint64_t helper_addr, std::uint64_t bundle_id, std::size_t total_size) {
+  std::vector<std::uint8_t> stub = {
+      0x48, 0x89, 0xF2,              // mov rdx, rsi
+      0x48, 0x89, 0xFE,              // mov rsi, rdi
+      0x48, 0xBF,                    // mov rdi, imm64
+  };
+  for (unsigned i = 0; i < 8; ++i) stub.push_back(static_cast<std::uint8_t>((bundle_id >> (i * 8u)) & 0xFFu));
+  stub.push_back(0x48); stub.push_back(0xB8);  // mov rax, imm64
+  for (unsigned i = 0; i < 8; ++i) stub.push_back(static_cast<std::uint8_t>((helper_addr >> (i * 8u)) & 0xFFu));
+  stub.push_back(0xFF); stub.push_back(0xE0);  // jmp rax
+  if (stub.size() > total_size) throw std::runtime_error("rewriter: thunk exceeds original function size");
+  stub.resize(total_size, 0x90);
+  return stub;
+}
+
+std::unique_ptr<vmp::arch::common::IsaLifter> make_lifter(const ParsedElf& elf,
+                                                          const detail::BinaryPolicyTarget& target,
+                                                          vmp::arch::common::CallingConvention& cc_out) {
+  using namespace vmp::arch;
+  switch (elf.ehdr.e_machine) {
+    case EM_X86_64:
+      cc_out = vmp::arch::common::CallingConvention::sysv_x64;
+      return std::make_unique<x64::X64Lifter>(target.vm2 ? vmp::arch::common::TargetDomain::vm2
+                                                          : vmp::arch::common::TargetDomain::vm1);
+    case EM_386:
+      cc_out = vmp::arch::common::CallingConvention::cdecl_x86;
+      return std::make_unique<x86::X86Lifter>();
+    case EM_ARM:
+      cc_out = vmp::arch::common::CallingConvention::aapcs32;
+      return std::make_unique<arm::ArmLifter>();
+    case EM_AARCH64:
+      cc_out = vmp::arch::common::CallingConvention::aapcs64;
+      return std::make_unique<arm64::Arm64Lifter>();
+    default:
+      return nullptr;
+  }
+}
+
+json lift_diag_json(const std::vector<vmp::arch::common::Diagnostic>& diags) {
+  json out = json::array();
+  for (const auto& d : diags) {
+    out.push_back({{"offset", d.offset}, {"detail", d.detail}});
+  }
+  return out;
+}
+
 }  // namespace
 
 ElfContainer load(const std::filesystem::path& path) { return to_container(parse_bytes(detail::read_file(path)), path); }
@@ -207,28 +268,75 @@ ElfContainer apply(const ElfContainer& input, const vmp::policy::PolicyIR& polic
   auto bytes = parsed.bytes;
   const auto targets = detail::binary_targets(policy_ir);
   std::vector<detail::StringRecordRequest> requests;
-  std::vector<detail::BinaryPolicyTarget> thunk_targets;
   std::set<std::string> resolved;
+  json thunk_meta;
+  thunk_meta["container"] = "elf";
+  thunk_meta["thunks"] = json::array();
+  std::vector<VmpCodeRecord> vmpcode_records;
+  std::uint64_t next_bundle_id = 1;
+  std::uint64_t vm1_helper_addr = 0;
+  if (const auto helper = find_symbol(parsed, "vmp_dispatch_vm1_sysv2")) vm1_helper_addr = helper->first.sym.st_value;
+
   for (const auto& target : targets) {
-    if (!target.container_path.empty()) {
-      continue;
-    }
-    if (target.vm1 || target.vm2) {
-      thunk_targets.push_back(target);
-    }
-    if (!(target.vm_string && target.highly_sensitive)) {
-      continue;
-    }
+    if (!target.container_path.empty()) continue;
     const auto located = find_symbol(parsed, target.symbol);
-    if (!located) {
-      continue;
+    if (target.vm1 || target.vm2) {
+      json thunk_entry{{"symbol", target.symbol}, {"domain", target.vm2 ? "vm2" : "vm1"}, {"mode", "passthrough"}};
+      if (options.enable_lift && located) {
+        vmp::arch::common::CallingConvention cc{};
+        if (auto lifter = make_lifter(parsed, target, cc); lifter) {
+          const auto& [sym, sec] = *located;
+          const auto file_off = symbol_file_offset(sym, sec, 0);
+          const auto code_size = static_cast<std::size_t>(sym.sym.st_size);
+          if (code_size > 0 && file_off + code_size <= parsed.bytes.size()) {
+            vmp::arch::common::FunctionView view;
+            view.base_addr = sym.sym.st_value;
+            view.cc = cc;
+            view.endian = vmp::arch::common::ArchEndianness::little;
+            view.code.assign(parsed.bytes.begin() + static_cast<std::ptrdiff_t>(file_off),
+                             parsed.bytes.begin() + static_cast<std::ptrdiff_t>(file_off + code_size));
+            if (!lifter->can_lift(view)) {
+              thunk_entry["lift_failed"] = true;
+              thunk_entry["diagnostics"] = json::array({{{"offset", 0}, {"detail", "incompatible function view"}}});
+            } else {
+              auto lifted = lifter->lift(view);
+              if (lifted.ok()) {
+                thunk_entry["mode"] = "lifted";
+                thunk_entry["bundle_id"] = next_bundle_id;
+                if (target.vm2 && lifted.vm2_module.has_value()) {
+                  vmpcode_records.push_back(VmpCodeRecord{next_bundle_id, 2, target.symbol, lifted.vm2_module->serialize()});
+                } else {
+                  vmpcode_records.push_back(VmpCodeRecord{next_bundle_id, 1, target.symbol, lifted.module.serialize()});
+                }
+                if (parsed.ehdr.e_machine == EM_X86_64 && !target.vm2 && vm1_helper_addr != 0 && sym.sym.st_size >= 28) {
+                  const auto stub = make_x64_sysv2_thunk(vm1_helper_addr, next_bundle_id, static_cast<std::size_t>(sym.sym.st_size));
+                  std::copy(stub.begin(), stub.end(), bytes.begin() + static_cast<std::ptrdiff_t>(file_off));
+                  thunk_entry["patched"] = true;
+                } else {
+                  thunk_entry["patched"] = false;
+                }
+                ++next_bundle_id;
+              } else {
+                thunk_entry["mode"] = "passthrough";
+                thunk_entry["lift_failed"] = true;
+                thunk_entry["diagnostics"] = lift_diag_json(lifted.diagnostics);
+              }
+            }
+          }
+        }
+      }
+      thunk_meta["thunks"].push_back(thunk_entry);
     }
+
+    if (!(target.vm_string && target.highly_sensitive)) continue;
+    if (!located) continue;
     const auto& [sym, sec] = *located;
     auto plain = infer_plaintext(parsed, sym, sec, target.offset);
     requests.push_back(detail::StringRecordRequest{detail::stable_string_id(target.symbol), target.symbol, plain});
     zero_symbol(bytes, sym, sec, target.offset);
     resolved.insert(target.symbol);
   }
+
   for (const auto& target : targets) {
     if (!target.container_path.empty()) continue;
     if ((target.vm_string && target.highly_sensitive) || target.vm1 || target.vm2) {
@@ -237,6 +345,7 @@ ElfContainer apply(const ElfContainer& input, const vmp::policy::PolicyIR& polic
       }
     }
   }
+
   std::vector<std::pair<std::string, std::vector<std::uint8_t>>> extra_sections;
   if (!requests.empty()) {
     const auto artifacts = detail::build_string_pool(requests);
@@ -245,9 +354,12 @@ ElfContainer apply(const ElfContainer& input, const vmp::policy::PolicyIR& polic
     if (!options.strings_kdf_path.empty()) detail::write_text(options.strings_kdf_path, artifacts.kdf_json.dump(2));
     extra_sections.push_back({".vmpstrings", artifacts.blob});
   }
+  if (!vmpcode_records.empty()) {
+    extra_sections.push_back({".vmpcode", serialize_vmpcode(vmpcode_records)});
+  }
   extra_sections.push_back({".vmp_init_array", std::vector<std::uint8_t>(8, 0)});
-  if (!thunk_targets.empty()) {
-    const auto thunk = detail::vm_thunk_descriptor_json(thunk_targets, options, "elf");
+  if (!thunk_meta["thunks"].empty()) {
+    const auto thunk = thunk_meta.dump(2);
     extra_sections.push_back({".vmpvmthk", std::vector<std::uint8_t>(thunk.begin(), thunk.end())});
   }
   auto out = input;

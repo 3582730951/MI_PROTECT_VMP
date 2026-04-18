@@ -36,6 +36,7 @@ struct Options {
   std::string string_kdf = "key_derivation.json";
   std::string vm1_module;
   std::string vm2_module;
+  bool lift = false;
 };
 
 struct RustTsvRecord {
@@ -55,7 +56,7 @@ int usage(const char* argv0, const std::string& message = {}) {
             << " [--dump-schema] [--policy <path>] [--rust-target-dir <dir>] [--emit-policy-json <path>] [--validate-only]"
             << " [--detector-selftest] [--platform <linux|windows|android|ios|macos>]"
             << " [--protect-strings --string-bin <bin> --string-idx <idx> --string-kdf <kdf>]"
-            << " [--input <path> --output <path> [--strings-pool <bin> --strings-idx <json>] [--vm1-module <module.vm1>] [--vm2-module <module.vm2>]]"
+            << " [--input <path> --output <path> [--lift] [--strings-pool <bin> --strings-idx <json>] [--vm1-module <module.vm1>] [--vm2-module <module.vm2>]]"
             << std::endl;
   return 1;
 }
@@ -98,6 +99,8 @@ Options parse_args(int argc, char** argv) {
       options.vm1_module = argv[++i];
     } else if (arg == "--vm2-module") {
       options.vm2_module = argv[++i];
+    } else if (arg == "--lift") {
+      options.lift = true;
     } else {
       throw std::runtime_error("unknown argument: " + arg);
     }
@@ -396,6 +399,7 @@ int main(int argc, char** argv) {
       rewrite_options.strings_kdf_path = options.string_kdf;
       rewrite_options.vm1_module_path = options.vm1_module;
       rewrite_options.vm2_module_path = options.vm2_module;
+      rewrite_options.enable_lift = options.lift;
       const auto container = rewriter.load(options.input_path);
       const auto rewritten = rewriter.apply(container, policy_ir, rewrite_options);
       rewriter.write(rewritten, options.output_path);

@@ -1,6 +1,6 @@
 # arch/arm
 
-- 对应 plan：§10（ARM）
-- 范围：ARM lifting / ABI 骨架
-- 当前状态：skeleton
-- TODO：补齐寄存器映射与 calling convention 处理
+- 支持 ABI：AAPCS (`r0..r3`)
+- 发射域：VM1
+- 支持子集：ARM-state `mov/add/sub/and/orr/eor/cmp/b/bl/bx/ldr/str`
+- 条件执行：本轮只稳定支持条件分支；thumb 遇到即给出 `unsupported_thumb_mode` 诊断

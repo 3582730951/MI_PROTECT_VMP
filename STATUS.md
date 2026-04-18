@@ -803,3 +803,64 @@
   - `cd /workspace/vmp && cargo test --workspace`：通过。
   - `cd /workspace/vmp && rg -n "NOT_IMPLEMENTED" backends/rewriter tests/backends_rewriter tools/src/vmp_protect.cpp`：无输出。
   - clean-copy `/tmp/vmp-sub13-clean`：使用 `tar` 排除 `.git` / `build` / `build-*` / `target` / `Cargo.lock` / `passwd.txt` 后，重新执行 `cmake -S . -B build -G Ninja -DVMP_PLATFORM=linux -DVMP_ARCH=x64 -DCMAKE_BUILD_TYPE=Release && cmake --build build -j && ctest --test-dir build --output-on-failure && cargo test --workspace`，全部通过（PE roundtrip 仍按规则 skip）。
+
+### subtask_14
+- 本轮清单：
+  - 新增 `arch/common/` lifting 统一接口：`FunctionView`、`RelocationEntry`、`Diagnostic`、`LiftedFunction`、`IsaLifter`，并补公共 relocation/整数读取工具。
+  - 实现 `arch/x86` MVP lifter：x86-32 最小长度感知解码，覆盖 `mov/add/sub/imul/and/or/xor/shl/shr/sar/cmp+jcc/jmp/call/ret/push/pop` 子集并发射 VM1。
+  - 实现 `arch/x64` MVP lifter：REX-aware x86_64 解码，覆盖 `mov/add/sub/imul/and/or/xor/shl/shr/sar/cmp+jcc/jmp/call/ret`；默认发射 VM1，可按目标域发射 VM2。
+  - 实现 `arch/arm` MVP lifter：ARMv7 ARM-state 4-byte 解码，支持 `mov/add/sub/and/orr/eor/cmp/b/bl/bx/ldr/str`；thumb 本轮诊断回退。
+  - 实现 `arch/arm64` MVP lifter：AArch64 4-byte 解码，支持 `add/sub/mul/sdiv/udiv/lsl/lsr/asr/and/orr/eor/b/bl/ret/b.cond/ldr/str` 并发射 VM1。
+  - 实现 relocation carrying：若立即数字段覆盖 relocation，则使用 `resolved_value` 参与 lifting，并把 `reloc:<tag>:<value>` 载入模块常量池。
+  - 将 `backends/rewriter` 接入 `--lift`：ELF 路径会对 `language_origin=binary` 且 `protection_domain in {vm1,vm2}` 的目标尝试 lifting，成功时把模块序列化进 `.vmpcode`，并为已验证的 x86_64 SysV/VM1 路径 patch thunk；失败时保留 passthrough 元数据到 `.vmpvmthk`。
+  - 扩展 `vmp-protect` 支持 `--lift`。
+  - 新增真测：`tests/arch/` 下 7 个 lifter 单测 + `rewriter_lift_integration_elf.py` 集成测试；全部接入 CTest。
+  - 更新 `arch/README.md` 与各 ISA README。
+- 变更文件：
+  - `arch/CMakeLists.txt`
+  - `arch/README.md`
+  - `arch/common/CMakeLists.txt`
+  - `arch/common/include/vmp/arch/common/lifting.h`
+  - `arch/common/src/lifting.cpp`
+  - `arch/x86/CMakeLists.txt`
+  - `arch/x86/README.md`
+  - `arch/x86/include/vmp/arch/x86/x86.h`
+  - `arch/x86/src/x86.cpp`
+  - `arch/x64/CMakeLists.txt`
+  - `arch/x64/README.md`
+  - `arch/x64/include/vmp/arch/x64/x64.h`
+  - `arch/x64/src/x64.cpp`
+  - `arch/arm/CMakeLists.txt`
+  - `arch/arm/README.md`
+  - `arch/arm/include/vmp/arch/arm/arm.h`
+  - `arch/arm/src/arm.cpp`
+  - `arch/arm64/CMakeLists.txt`
+  - `arch/arm64/README.md`
+  - `arch/arm64/include/vmp/arch/arm64/arm64.h`
+  - `arch/arm64/src/arm64.cpp`
+  - `backends/rewriter/CMakeLists.txt`
+  - `backends/rewriter/include/vmp/backend/rewriter_backend.h`
+  - `backends/rewriter/src/formats/elf.cpp`
+  - `tests/CMakeLists.txt`
+  - `tests/arch/test_common.h`
+  - `tests/arch/x86_lift_basic.cpp`
+  - `tests/arch/x64_lift_basic_sysv.cpp`
+  - `tests/arch/x64_lift_basic_msvc.cpp`
+  - `tests/arch/arm_lift_basic.cpp`
+  - `tests/arch/arm64_lift_basic.cpp`
+  - `tests/arch/lift_unsupported_diagnostic.cpp`
+  - `tests/arch/lift_relocation_carrying.cpp`
+  - `tests/arch/rewriter_lift_integration_elf.py`
+  - `tools/src/vmp_protect.cpp`
+  - `STATUS.md`
+- 未完成项：
+  - ELF rewriter 的“真实可执行 thunk patch”当前只在已验证的 x86_64 SysV + VM1 + 2 整数参数集成样例路径落地；其他 ISA / ABI / 容器仍走 lift metadata / passthrough 回退。
+  - x86/x64 复杂 SIB、ARM thumb、ARM64 更完整 NZCV/条件执行、SIMD/浮点 lifting 仍未覆盖（按本轮 out-of-scope 可接受）。
+  - relocation 在 rewriter 侧尚未从 ELF relocation table 完整提取进 `FunctionView.relocs`；本轮真实 carrying 已在 lifter API / 单测覆盖。
+- 下一子任务建议：
+  - 进入 planner / analyzer / rewriter 深化联动：把二进制分析得到的真实 relocation / ABI hint / function slice 输入到 lifter，并把 `.vmpcode` thunk patch 从样例化 x86_64 扩展到通用 x64/x86/ARM64 路径。
+- 验证：
+  - `cmake --build build -j`：通过。
+  - `ctest --test-dir build --output-on-failure`：`100/100` 通过（`rewriter_pe_roundtrip` 依平台前置条件被标记 skip）。
+  - `cargo test --workspace`：通过。
+  - clean copy：`/tmp/vmp_subtask14_clean/vmp` 下重新 `cmake -S . -B build -G Ninja && cmake --build build -j && ctest --test-dir build --output-on-failure`：通过，`100/100` 通过（同上 1 个 skip）。

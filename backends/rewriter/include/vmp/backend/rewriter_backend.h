@@ -24,6 +24,7 @@ struct RewriteOptions {
   std::filesystem::path strings_kdf_path;
   std::filesystem::path vm1_module_path;
   std::filesystem::path vm2_module_path;
+  bool enable_lift = false;
 };
 
 struct SectionInfo {
