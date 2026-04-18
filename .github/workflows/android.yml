@@ -1,0 +1,24 @@
+name: android
+on: [push, pull_request]
+jobs:
+  android-arm64:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        abi: [arm64-v8a, armeabi-v7a, x86_64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: nttld/setup-ndk@v1
+        id: ndk
+        with:
+          ndk-version: r26d
+      - name: cmake-configure
+        run: |
+          cmake -S . -B build-android \
+            -DCMAKE_TOOLCHAIN_FILE=${{ steps.ndk.outputs.ndk-path }}/build/cmake/android.toolchain.cmake \
+            -DANDROID_ABI=${{ matrix.abi }} \
+            -DANDROID_PLATFORM=android-24 \
+            -DVMP_PLATFORM=android \
+            -DVMP_ARCH=$(case ${{ matrix.abi }} in arm64-v8a) echo arm64 ;; armeabi-v7a) echo arm ;; x86_64) echo x64 ;; esac)
+      - name: cmake-build
+        run: cmake --build build-android -j

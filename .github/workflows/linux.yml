@@ -1,0 +1,23 @@
+name: linux
+on: [push, pull_request]
+jobs:
+  linux-x64:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch: [x64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - name: deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build build-essential python3 nlohmann-json3-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - name: cmake-configure
+        run: cmake -S . -B build -G Ninja -DVMP_PLATFORM=linux -DVMP_ARCH=${{ matrix.arch }} -DCMAKE_BUILD_TYPE=Release
+      - name: cmake-build
+        run: cmake --build build -j
+      - name: ctest
+        run: ctest --test-dir build --output-on-failure
+      - name: cargo-test
+        run: cargo test --workspace --all-features

@@ -1,0 +1,13 @@
+[workspace]
+members = [
+  "bindings/rust/vmp-macros",
+  "bindings/rust/vmp-policy",
+  "runtime/audit/rust_audit",
+  "runtime/state/rust_state",
+  "runtime/strings/rust_strings",
+  "runtime/integrity/rust_integrity",
+  "runtime/jit/rust_jit",
+  "runtime/vm1/rust_vm1",
+  "runtime/vm2/rust_vm2",
+]
+resolver = "2"

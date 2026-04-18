@@ -1,0 +1,18 @@
+name: ios
+on: [push, pull_request]
+jobs:
+  ios-arm64:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: deps
+        run: brew install cmake ninja
+      - name: cmake-configure
+        run: |
+          cmake -S . -B build-ios -G Xcode \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 \
+            -DVMP_PLATFORM=ios -DVMP_ARCH=arm64
+      - name: cmake-build
+        run: cmake --build build-ios --config Release -- -sdk iphoneos CODE_SIGNING_ALLOWED=NO

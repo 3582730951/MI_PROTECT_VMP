@@ -1,0 +1,15 @@
+build-*/
+target/
+**/target/
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dylib
+*.dll
+*.exe
+.DS_Store
+*.swp
+.vscode/
+.idea/

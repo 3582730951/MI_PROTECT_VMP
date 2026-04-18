@@ -1,0 +1,16 @@
+name: windows
+on: [push, pull_request]
+jobs:
+  windows-x64:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: cmake-configure
+        run: cmake -S . -B build -DVMP_PLATFORM=windows -DVMP_ARCH=x64 -DCMAKE_BUILD_TYPE=Release
+      - name: cmake-build
+        run: cmake --build build --config Release -j
+      - name: ctest
+        run: ctest --test-dir build -C Release --output-on-failure
+      - name: cargo-test
+        run: cargo test --workspace --all-features
