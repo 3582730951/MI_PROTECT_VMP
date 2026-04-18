@@ -751,3 +751,55 @@
   - `cd /workspace/vmp && cargo test --workspace`：通过。
   - `cd /workspace/vmp && rg -n "NOT_IMPLEMENTED" loader/android loader/ios loader/common tests/loader runtime/state runtime/jit`：无输出。
   - clean-copy `/tmp/vmp-sub12-clean`：排除 `.git` / `build*` / `target` / `Cargo.lock` / `passwd.txt` 后，重新执行 `cmake -S . -B build -G Ninja -DVMP_PLATFORM=linux -DVMP_ARCH=x64 -DCMAKE_BUILD_TYPE=Release && cmake --build build -j && ctest --test-dir build --output-on-failure && cargo test --workspace`，全部通过。
+
+## subtask_13
+- 本轮清单：
+  - 完成 `backends/rewriter/` 二进制重写后端最小可用实现：新增统一 `BinaryRewriter` 驱动、`Container` 判别联合（PE / ELF / Mach-O / APK / IPA）、基于 `std::fstream` 的 buffered 读写路径。
+  - 新增格式模块：
+    - `formats/elf.cpp`：解析 ELF64 header / phdr / shdr / symtab，支持高敏 `vm_string` 二进制策略条目解析、原始字面量清零、`.vmpstrings` 构建、`.vmp_init_array`/`.vmpvmthk` 附加；可选输出 sidecar pool/index/kdf。
+    - `formats/pe.cpp`：解析 DOS/PE/COFF/optional header、section table 与 export/import/resource/reloc data-directory RVA；支持 `.vmpload` 注入、`.CRT$XLB` 注册段补齐、VM thunk 元数据段补齐。
+    - `formats/macho.cpp`：解析 `mach_header_64`、`LC_SEGMENT_64`、`LC_DYLD_INFO`、`LC_SYMTAB`、`LC_DYSYMTAB`；支持 `__DATA,__vmp_load` / `__DATA,__mod_init_func` / `__DATA,__vmp_strings` / `__DATA,__vmp_vmthk` 生成。
+    - `formats/zip.cpp`：实现 stored-ZIP APK/IPA 容器读写、`CFBundleExecutable` 解析、内嵌 ELF/Mach-O 二次重写。
+  - 扩展 `vmp-protect`：新增 `--input` / `--output` / `--strings-pool` / `--strings-idx` / `--vm1-module` / `--vm2-module`；保留原策略校验 / Rust merge / `--protect-strings` 路径；未知格式时以 `binary_format_unknown` 明确失败。
+  - 接入 Policy IR：仅消费 `language_origin=binary` 条目；支持 `symbol`、`symbol+0xOFFSET`、`path/in/container::symbol(+offset)` 选择器；`vm_string + highly_sensitive` 触发字符串池重建；`protection_domain=vm1|vm2` 触发 bridge thunk 描述段输出。
+  - 新增真测 `tests/backends_rewriter/`：
+    - `rewriter_elf_roundtrip.py`
+    - `rewriter_pe_roundtrip.py`（MinGW 缺失时显式 `SKIP_REASON`）
+    - `rewriter_macho_roundtrip.py`
+    - `rewriter_apk_passthrough.py`
+    - `rewriter_ipa_passthrough.py`
+    - `rewriter_unknown_format_rejected.py`
+    - `rewriter_policy_mismatch.py`
+  - 更新 `backends/rewriter/README.md`：记录支持范围、CLI、测试入口与“不做重签名/公证”限制。
+- 变更文件：
+  - `backends/rewriter/CMakeLists.txt`
+  - `backends/rewriter/README.md`
+  - `backends/rewriter/include/vmp/backend/rewriter_backend.h`
+  - `backends/rewriter/src/internal/common.h`
+  - `backends/rewriter/src/rewriter_backend.cpp`
+  - `backends/rewriter/src/formats/elf.cpp`
+  - `backends/rewriter/src/formats/pe.cpp`
+  - `backends/rewriter/src/formats/macho.cpp`
+  - `backends/rewriter/src/formats/zip.cpp`
+  - `tools/CMakeLists.txt`
+  - `tools/src/vmp_protect.cpp`
+  - `tests/CMakeLists.txt`
+  - `tests/backends_rewriter/rewriter_elf_roundtrip.py`
+  - `tests/backends_rewriter/rewriter_pe_roundtrip.py`
+  - `tests/backends_rewriter/rewriter_macho_roundtrip.py`
+  - `tests/backends_rewriter/rewriter_apk_passthrough.py`
+  - `tests/backends_rewriter/rewriter_ipa_passthrough.py`
+  - `tests/backends_rewriter/rewriter_unknown_format_rejected.py`
+  - `tests/backends_rewriter/rewriter_policy_mismatch.py`
+  - `STATUS.md`
+- 未完成项：
+  - 本轮要求范围内无未完成项；PE roundtrip 在当前容器因缺少 MinGW 交叉编译器按测试约定跳过，并已记录显式 `SKIP_REASON`。
+- 下一子任务建议：
+  - 进入 subtask 14（ISA lifting / deeper binary-to-VM routing），把本轮生成的 VM thunk 描述段替换为真实 lifted bridge/thunk 代码与模块装配。
+- 验证：
+  - TDD red：先接入 `tests/backends_rewriter/rewriter_elf_roundtrip.py` / `rewriter_unknown_format_rejected.py` / `rewriter_policy_mismatch.py` 到 CTest；初次失败于 `vmp-protect` 不接受 `--input/--output`、未知格式无显式错误、策略失配无清晰报错，随后补齐 CLI/rewriter 转绿。
+  - `cd /workspace/vmp && cmake --build build -j`：通过。
+  - `cd /workspace/vmp && ctest --test-dir build --output-on-failure`：`92/92` 通过，其中 `rewriter_pe_roundtrip` 因 MinGW 缺失显式 skip。
+  - `cd /workspace/vmp && cargo test --workspace`：通过。
+  - `cd /workspace/vmp && rg -n "NOT_IMPLEMENTED" backends/rewriter tests/backends_rewriter tools/src/vmp_protect.cpp`：无输出。
+  - clean-copy `/tmp/vmp-sub13-clean`：使用 `tar` 排除 `.git` / `build` / `build-*` / `target` / `Cargo.lock` / `passwd.txt` 后，重新执行 `cmake -S . -B build -G Ninja -DVMP_PLATFORM=linux -DVMP_ARCH=x64 -DCMAKE_BUILD_TYPE=Release && cmake --build build -j && ctest --test-dir build --output-on-failure && cargo test --workspace`，全部通过（PE roundtrip 仍按规则 skip）。

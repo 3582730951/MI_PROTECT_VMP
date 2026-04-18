@@ -26,7 +26,7 @@ endforeach()
 set_target_properties(vmp-protect PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tools)
 set_target_properties(vmp-string-protect PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tools)
 
-target_link_libraries(vmp-protect PRIVATE vmp_policy vmp_runtime_audit vmp_runtime_strings nlohmann_json::nlohmann_json)
+target_link_libraries(vmp-protect PRIVATE vmp_backend_rewriter vmp_policy vmp_runtime_audit vmp_runtime_strings nlohmann_json::nlohmann_json)
 target_link_libraries(vmp-string-protect PRIVATE vmp_runtime_strings vmp_policy nlohmann_json::nlohmann_json)
 
 add_executable(vmp-vm1-asm ${CMAKE_CURRENT_SOURCE_DIR}/src/vmp_vm1_asm.cpp)

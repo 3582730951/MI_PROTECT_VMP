@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include <vmp/backend/rewriter_backend.h>
 #include <vmp/policy/policy_ir.h>
 #include <vmp/runtime/audit/audit.h>
 #include <vmp/runtime/audit/detector.h>
@@ -23,6 +24,8 @@ struct Options {
   std::string policy_path;
   std::string rust_target_dir;
   std::string emit_policy_json_path;
+  std::string input_path;
+  std::string output_path;
   bool dump_schema = false;
   bool validate_only = false;
   bool detector_selftest = false;
@@ -31,6 +34,8 @@ struct Options {
   std::string string_bin = "string_pool.bin";
   std::string string_idx = "string_pool.idx.json";
   std::string string_kdf = "key_derivation.json";
+  std::string vm1_module;
+  std::string vm2_module;
 };
 
 struct RustTsvRecord {
@@ -50,6 +55,7 @@ int usage(const char* argv0, const std::string& message = {}) {
             << " [--dump-schema] [--policy <path>] [--rust-target-dir <dir>] [--emit-policy-json <path>] [--validate-only]"
             << " [--detector-selftest] [--platform <linux|windows|android|ios|macos>]"
             << " [--protect-strings --string-bin <bin> --string-idx <idx> --string-kdf <kdf>]"
+            << " [--input <path> --output <path> [--strings-pool <bin> --strings-idx <json>] [--vm1-module <module.vm1>] [--vm2-module <module.vm2>]]"
             << std::endl;
   return 1;
 }
@@ -80,6 +86,18 @@ Options parse_args(int argc, char** argv) {
       options.string_idx = argv[++i];
     } else if (arg == "--string-kdf") {
       options.string_kdf = argv[++i];
+    } else if (arg == "--input") {
+      options.input_path = argv[++i];
+    } else if (arg == "--output") {
+      options.output_path = argv[++i];
+    } else if (arg == "--strings-pool") {
+      options.string_bin = argv[++i];
+    } else if (arg == "--strings-idx") {
+      options.string_idx = argv[++i];
+    } else if (arg == "--vm1-module") {
+      options.vm1_module = argv[++i];
+    } else if (arg == "--vm2-module") {
+      options.vm2_module = argv[++i];
     } else {
       throw std::runtime_error("unknown argument: " + arg);
     }
@@ -349,20 +367,42 @@ int main(int argc, char** argv) {
       vmp::policy::save_to_file(policy_ir, options.emit_policy_json_path);
     }
 
-    if (options.validate_only && !options.protect_strings) {
+    const bool has_rewrite = !options.input_path.empty() || !options.output_path.empty();
+    if (has_rewrite && (options.input_path.empty() || options.output_path.empty())) {
+      return usage(argv[0], "--input and --output must be provided together");
+    }
+
+    if (options.validate_only && !options.protect_strings && !has_rewrite) {
       std::cout << "OK: policy loaded, " << policy_ir.entries.size() << " entries, schema=v"
                 << policy_ir.schema_version << std::endl;
       return 0;
     }
 
     std::size_t protected_count = 0;
-    if (options.protect_strings) {
+    if (options.protect_strings && !has_rewrite) {
       auto master_key = vmp::tools::strings_tool::resolve_master_key();
       const auto outputs = vmp::tools::strings_tool::protect_policy_strings(options.policy_path, options.string_bin,
                                                                             options.string_idx, options.string_kdf,
                                                                             master_key);
       vmp::runtime::strings::secure_memzero(master_key.data(), master_key.size());
       protected_count = outputs.protected_count;
+    }
+
+    if (has_rewrite) {
+      vmp::backend::rewriter::BinaryRewriter rewriter;
+      vmp::backend::rewriter::RewriteOptions rewrite_options;
+      rewrite_options.strings_pool_path = options.string_bin;
+      rewrite_options.strings_index_path = options.string_idx;
+      rewrite_options.strings_kdf_path = options.string_kdf;
+      rewrite_options.vm1_module_path = options.vm1_module;
+      rewrite_options.vm2_module_path = options.vm2_module;
+      const auto container = rewriter.load(options.input_path);
+      const auto rewritten = rewriter.apply(container, policy_ir, rewrite_options);
+      rewriter.write(rewritten, options.output_path);
+      std::cout << "OK: policy loaded, " << policy_ir.entries.size() << " entries, schema=v" << policy_ir.schema_version
+                << " format=" << vmp::backend::rewriter::to_string(vmp::backend::rewriter::kind_of(rewritten))
+                << " rewritten=" << options.output_path << std::endl;
+      return 0;
     }
 
     std::cout << "OK: policy loaded, " << policy_ir.entries.size() << " entries, schema=v" << policy_ir.schema_version;
@@ -372,6 +412,11 @@ int main(int argc, char** argv) {
     std::cout << std::endl;
     return 0;
   } catch (const std::exception& ex) {
-    return usage(argv[0], ex.what());
+    const std::string message = ex.what();
+    if (message.find("binary_format_unknown") != std::string::npos) {
+      std::cerr << message << std::endl;
+      return 2;
+    }
+    return usage(argv[0], message);
   }
 }

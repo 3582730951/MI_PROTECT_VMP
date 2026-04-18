@@ -512,3 +512,32 @@ foreach(target IN LISTS VMP_VM1_EXECUTABLE_TARGETS)
     endif()
   endif()
 endforeach()
+
+# backends/rewriter tests
+add_test(NAME rewriter_elf_roundtrip
+  COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/backends_rewriter/rewriter_elf_roundtrip.py $<TARGET_FILE:vmp-protect> ${CMAKE_SOURCE_DIR} ${CMAKE_BINARY_DIR})
+set_tests_properties(rewriter_elf_roundtrip PROPERTIES PASS_REGULAR_EXPRESSION "rewriter_elf_roundtrip OK")
+
+add_test(NAME rewriter_pe_roundtrip
+  COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/backends_rewriter/rewriter_pe_roundtrip.py $<TARGET_FILE:vmp-protect> ${CMAKE_BINARY_DIR})
+set_tests_properties(rewriter_pe_roundtrip PROPERTIES PASS_REGULAR_EXPRESSION "rewriter_pe_roundtrip OK" SKIP_REGULAR_EXPRESSION "SKIP_REASON")
+
+add_test(NAME rewriter_macho_roundtrip
+  COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/backends_rewriter/rewriter_macho_roundtrip.py $<TARGET_FILE:vmp-protect> ${CMAKE_BINARY_DIR})
+set_tests_properties(rewriter_macho_roundtrip PROPERTIES PASS_REGULAR_EXPRESSION "rewriter_macho_roundtrip OK")
+
+add_test(NAME rewriter_apk_passthrough
+  COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/backends_rewriter/rewriter_apk_passthrough.py $<TARGET_FILE:vmp-protect> ${CMAKE_BINARY_DIR})
+set_tests_properties(rewriter_apk_passthrough PROPERTIES PASS_REGULAR_EXPRESSION "rewriter_apk_passthrough OK")
+
+add_test(NAME rewriter_ipa_passthrough
+  COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/backends_rewriter/rewriter_ipa_passthrough.py $<TARGET_FILE:vmp-protect> ${CMAKE_BINARY_DIR})
+set_tests_properties(rewriter_ipa_passthrough PROPERTIES PASS_REGULAR_EXPRESSION "rewriter_ipa_passthrough OK")
+
+add_test(NAME rewriter_unknown_format_rejected
+  COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/backends_rewriter/rewriter_unknown_format_rejected.py $<TARGET_FILE:vmp-protect> ${CMAKE_BINARY_DIR})
+set_tests_properties(rewriter_unknown_format_rejected PROPERTIES PASS_REGULAR_EXPRESSION "rewriter_unknown_format_rejected OK")
+
+add_test(NAME rewriter_policy_mismatch
+  COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/backends_rewriter/rewriter_policy_mismatch.py $<TARGET_FILE:vmp-protect> ${CMAKE_BINARY_DIR} ${CMAKE_SOURCE_DIR})
+set_tests_properties(rewriter_policy_mismatch PROPERTIES PASS_REGULAR_EXPRESSION "rewriter_policy_mismatch OK")
