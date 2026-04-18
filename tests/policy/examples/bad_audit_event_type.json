@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "defaults": {
+    "language_origin": "binary",
+    "annotation_origin": "external_manifest",
+    "protection_domain": "vm1",
+    "jit_policy": "off",
+    "plaintext_budget": "transient_only",
+    "reaction_policy": "log",
+    "integrity_level": "basic",
+    "platform_caps": ["windows", "x64"],
+    "sensitivity_level": "sensitive",
+    "profile_seed": 4,
+    "mobile_bridge_mode": "off",
+    "event_types": []
+  },
+  "entries": [
+    {
+      "symbol_or_region": "bad::audit_event_type",
+      "reaction_policy": "audit_then_delayed_exit",
+      "event_types": ["single_step"],
+      "annotation_tags": ["vm_func"],
+      "source_location": {"file": "manifest.json", "line": 4, "column": 1}
+    }
+  ]
+}

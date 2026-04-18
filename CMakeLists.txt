@@ -8,6 +8,10 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 
 option(VMP_WITH_JIT "Enable JIT placeholder targets" ON)
 option(VMP_WITH_VM2 "Enable VM2 placeholder targets" ON)
+
+include(cmake/third_party.cmake)
+vmp_require_nlohmann_json()
+
 set(VMP_PLATFORM "linux" CACHE STRING "Target platform: linux|windows|macos|android|ios")
 set_property(CACHE VMP_PLATFORM PROPERTY STRINGS linux windows macos android ios)
 set(VMP_ARCH "x64" CACHE STRING "Target architecture: x86|x64|arm|arm64")

@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "defaults": {
+    "language_origin": "cpp",
+    "annotation_origin": "attribute",
+    "protection_domain": "native",
+    "jit_policy": "off",
+    "plaintext_budget": "transient_only",
+    "reaction_policy": "log",
+    "integrity_level": "basic",
+    "platform_caps": ["linux", "x64"],
+    "sensitivity_level": "sensitive",
+    "profile_seed": 1,
+    "mobile_bridge_mode": "off",
+    "event_types": []
+  },
+  "entries": [
+    {
+      "symbol_or_region": "bad::vm_func_native",
+      "annotation_tags": ["vm_func"],
+      "source_location": {"file": "bad.cpp", "line": 1, "column": 1}
+    }
+  ]
+}

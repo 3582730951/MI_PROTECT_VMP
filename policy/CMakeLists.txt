@@ -1,5 +1,3 @@
-find_package(nlohmann_json REQUIRED)
-
 vmp_add_placeholder_library(vmp_policy
   HEADER ${CMAKE_CURRENT_SOURCE_DIR}/include/vmp/policy/policy_ir.h
   SOURCE ${CMAKE_CURRENT_SOURCE_DIR}/src/policy_ir.cpp

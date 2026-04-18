@@ -407,7 +407,7 @@ mod tests {
 
     #[test]
     fn load_and_validate_good_fixture() {
-        let policy = PolicyIR::load_from_file("tests/policy/examples/good.json").unwrap();
+        let policy = PolicyIR::load_from_file(format!("{}/../../../tests/policy/examples/good.json", env!("CARGO_MANIFEST_DIR"))).unwrap();
         let errors = policy.validate();
         assert!(errors.iter().all(|e| e.severity == ValidationSeverity::Warning));
     }

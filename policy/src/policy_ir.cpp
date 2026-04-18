@@ -92,19 +92,19 @@ struct EnumTables {
   }
 
   static const std::vector<std::pair<PlatformCaps, const char*>>& platform_caps() {
-    static const std::vector<std::pair<PlatformCaps, const char*>> table{{PlatformCaps::windows, "windows"},
-                                                                         {PlatformCaps::linux, "linux"},
-                                                                         {PlatformCaps::android, "android"},
-                                                                         {PlatformCaps::ios, "ios"},
-                                                                         {PlatformCaps::x86, "x86"},
-                                                                         {PlatformCaps::x64, "x64"},
-                                                                         {PlatformCaps::arm, "arm"},
-                                                                         {PlatformCaps::arm64, "arm64"},
-                                                                         {PlatformCaps::jit_allowed,
+    static const std::vector<std::pair<PlatformCaps, const char*>> table{{PlatformCaps::Windows, "windows"},
+                                                                         {PlatformCaps::Linux, "linux"},
+                                                                         {PlatformCaps::Android, "android"},
+                                                                         {PlatformCaps::Ios, "ios"},
+                                                                         {PlatformCaps::X86, "x86"},
+                                                                         {PlatformCaps::X64, "x64"},
+                                                                         {PlatformCaps::Arm, "arm"},
+                                                                         {PlatformCaps::Arm64, "arm64"},
+                                                                         {PlatformCaps::JitAllowed,
                                                                           "jit_allowed"},
-                                                                         {PlatformCaps::execmem_allowed,
+                                                                         {PlatformCaps::ExecmemAllowed,
                                                                           "execmem_allowed"},
-                                                                         {PlatformCaps::wx_enforced,
+                                                                         {PlatformCaps::WxEnforced,
                                                                           "wx_enforced"}};
     return table;
   }
@@ -612,8 +612,8 @@ std::vector<ValidationError> validate(const PolicyIR& policy_ir) {
                  "reaction_policy audit_then_delayed_exit requires event_types to contain 'hw_breakpoint'");
     }
 
-    if (has_platform_cap(entry.platform_caps, PlatformCaps::ios) &&
-        !has_platform_cap(entry.platform_caps, PlatformCaps::jit_allowed) &&
+    if (has_platform_cap(entry.platform_caps, PlatformCaps::Ios) &&
+        !has_platform_cap(entry.platform_caps, PlatformCaps::JitAllowed) &&
         entry.jit_policy == JitPolicy::aggressive) {
       maybe_push(errors,
                  ValidationSeverity::error,
@@ -719,17 +719,17 @@ std::string schema_as_json() {
                                                   "audit_only",
                                                   "audit_then_delayed_exit"})},
                                     {"integrity_level", json::array({"none", "basic", "strict"})},
-                                    {"platform_caps", platform_caps_to_json(static_cast<std::uint32_t>(PlatformCaps::windows) |
-                                                                             PlatformCaps::linux |
-                                                                             PlatformCaps::android |
-                                                                             PlatformCaps::ios |
-                                                                             PlatformCaps::x86 |
-                                                                             PlatformCaps::x64 |
-                                                                             PlatformCaps::arm |
-                                                                             PlatformCaps::arm64 |
-                                                                             PlatformCaps::jit_allowed |
-                                                                             PlatformCaps::execmem_allowed |
-                                                                             PlatformCaps::wx_enforced)},
+                                    {"platform_caps", platform_caps_to_json(static_cast<std::uint32_t>(PlatformCaps::Windows) |
+                                                                             PlatformCaps::Linux |
+                                                                             PlatformCaps::Android |
+                                                                             PlatformCaps::Ios |
+                                                                             PlatformCaps::X86 |
+                                                                             PlatformCaps::X64 |
+                                                                             PlatformCaps::Arm |
+                                                                             PlatformCaps::Arm64 |
+                                                                             PlatformCaps::JitAllowed |
+                                                                             PlatformCaps::ExecmemAllowed |
+                                                                             PlatformCaps::WxEnforced)},
                                     {"sensitivity_level",
                                      json::array({"normal", "sensitive", "highly_sensitive"})},
                                     {"profile_seed", "uint64"},

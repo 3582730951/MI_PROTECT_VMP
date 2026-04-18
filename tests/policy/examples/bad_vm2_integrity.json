@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "defaults": {
+    "language_origin": "cpp",
+    "annotation_origin": "attribute",
+    "protection_domain": "vm2",
+    "jit_policy": "hot_only",
+    "plaintext_budget": "transient_only",
+    "reaction_policy": "log",
+    "integrity_level": "basic",
+    "platform_caps": ["linux", "x64", "jit_allowed"],
+    "sensitivity_level": "sensitive",
+    "profile_seed": 6,
+    "mobile_bridge_mode": "off",
+    "event_types": []
+  },
+  "entries": [
+    {
+      "symbol_or_region": "bad::vm2_integrity",
+      "annotation_tags": ["vm_func"],
+      "source_location": {"file": "vm2.cpp", "line": 6, "column": 1}
+    }
+  ]
+}

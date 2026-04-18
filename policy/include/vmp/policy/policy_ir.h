@@ -56,17 +56,17 @@ enum class IntegrityLevel {
 
 enum class PlatformCaps : std::uint32_t {
   none = 0,
-  windows = 1u << 0,
-  linux = 1u << 1,
-  android = 1u << 2,
-  ios = 1u << 3,
-  x86 = 1u << 4,
-  x64 = 1u << 5,
-  arm = 1u << 6,
-  arm64 = 1u << 7,
-  jit_allowed = 1u << 8,
-  execmem_allowed = 1u << 9,
-  wx_enforced = 1u << 10,
+  Windows = 1u << 0,
+  Linux = 1u << 1,
+  Android = 1u << 2,
+  Ios = 1u << 3,
+  X86 = 1u << 4,
+  X64 = 1u << 5,
+  Arm = 1u << 6,
+  Arm64 = 1u << 7,
+  JitAllowed = 1u << 8,
+  ExecmemAllowed = 1u << 9,
+  WxEnforced = 1u << 10,
 };
 
 enum class SensitivityLevel {

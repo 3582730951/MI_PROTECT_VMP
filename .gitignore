@@ -13,3 +13,5 @@ target/
 *.swp
 .vscode/
 .idea/
+passwd.txt
+.git-credentials

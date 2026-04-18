@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "defaults": {
+    "language_origin": "cpp",
+    "annotation_origin": "external_manifest",
+    "protection_domain": "native",
+    "jit_policy": "off",
+    "plaintext_budget": "transient_only",
+    "reaction_policy": "log",
+    "integrity_level": "basic",
+    "platform_caps": ["ios", "arm64"],
+    "sensitivity_level": "sensitive",
+    "profile_seed": 7,
+    "mobile_bridge_mode": "ios_swift_objc",
+    "event_types": []
+  },
+  "entries": [
+    {
+      "symbol_or_region": "ios::fallback_interp",
+      "protection_domain": "vm1",
+      "jit_policy": "hot_only",
+      "annotation_tags": ["vm_func"],
+      "source_location": {"file": "src/ios.mm", "line": 9, "column": 1}
+    }
+  ]
+}

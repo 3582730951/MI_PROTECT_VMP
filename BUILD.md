@@ -67,7 +67,15 @@ cmake --build build-ios-arm64 -j
 # loader/ios/Package.swift is a placeholder for SwiftPM-side integration.
 ```
 
+## Policy CLI
+```bash
+/workspace/vmp/build-linux-x64/tools/vmp-protect --dump-schema
+/workspace/vmp/build-linux-x64/tools/vmp-protect --policy /workspace/vmp/tests/policy/examples/good.json
+/workspace/vmp/build-linux-x64/tools/vmp-protect --policy /workspace/vmp/tests/policy/examples/good.json --emit-policy-json /tmp/policy-roundtrip.json
+/workspace/vmp/build-linux-x64/tools/vmp-protect --policy /workspace/vmp/tests/policy/examples/good.json --validate-only
+```
+
 ## Notes
-- All executable entrypoints intentionally print `NOT_IMPLEMENTED`.
-- Library targets intentionally expose minimal headers only.
+- `vmp-protect` now fully implements policy loading, strict JSON validation, schema dumping, and JSON round-trip emission.
+- Other executable paths still print `NOT_IMPLEMENTED` until later subtasks land.
 - Unsupported business logic is tracked in `STATUS.md`.

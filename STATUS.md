@@ -1,204 +1,112 @@
 # STATUS
 
-## 本轮清单
+## 历史轮次：仓库骨架
 - 完成 `/workspace/vmp/` 仓库骨架与 plan §2 六层、§3 对外接口、§10 平台/架构分层的目录布局。
 - 完成顶层 CMake 构建骨架，提供 `VMP_WITH_JIT`、`VMP_WITH_VM2`、`VMP_PLATFORM`、`VMP_ARCH` 选项。
 - 完成 Cargo workspace 骨架，覆盖 `bindings/rust/` 与 `runtime/` 下 Rust crates。
 - 完成 Android `build.gradle.kts` 占位与 iOS `Package.swift` 占位。
 - 完成 `tools/` 空入口与 `tests/` dummy CTest。
-- 完成每个目录 `README.md`，标注 plan 对应范围、状态与 TODO。
 
-## 本轮产出文件清单（相对路径）
+## 本轮清单（子任务 2：Policy IR）
+- 完成 `policy/` C++ Policy IR：字段、枚举、`PolicyEntry` / `PolicyIR` / `ValidationError`、严格 JSON 读写、schema dump、验证器、`apply_vm_func_annotation()`、`apply_vm_string_annotation()`。
+- 完成 `tools/vmp-protect` 最小闭环：支持 `--policy`、`--emit-policy-json`、`--dump-schema`、`--validate-only`，并输出人类可读错误。
+- 新增 Rust crate `bindings/rust/vmp-policy`：`serde` 反序列化、同构 `PolicyIR`/`PolicyEntry`、`load_from_file()`、`validate()`。
+- 将 `vmp-policy` 接入 Cargo workspace，并新增本地 cargo source 配置，使用 Debian 提供的 Rust crate 源离线构建。
+- 完成 `tests/policy/` 真测：C++ round-trip、注解叠加语义、硬约束正反例、CLI 成功/失败路径、Rust/C++ 共享 JSON 解析结果等价。
+- 更新 `policy/README.md` 与 `BUILD.md` 文档。
+
+## 本轮变更文件（相对路径）
+- `.cargo/config.toml`
 - `BUILD.md`
-- `Cargo.lock`
 - `Cargo.toml`
-- `CMakeLists.txt`
-- `README.md`
 - `STATUS.md`
-- `analyzer/CMakeLists.txt`
-- `analyzer/README.md`
-- `analyzer/include/vmp/analyzer/analyzer.h`
-- `analyzer/src/analyzer.cpp`
-- `arch/CMakeLists.txt`
-- `arch/README.md`
-- `arch/arm/CMakeLists.txt`
-- `arch/arm/README.md`
-- `arch/arm/include/vmp/arch/arm/arm.h`
-- `arch/arm/src/arm.cpp`
-- `arch/arm64/CMakeLists.txt`
-- `arch/arm64/README.md`
-- `arch/arm64/include/vmp/arch/arm64/arm64.h`
-- `arch/arm64/src/arm64.cpp`
-- `arch/x64/CMakeLists.txt`
-- `arch/x64/README.md`
-- `arch/x64/include/vmp/arch/x64/x64.h`
-- `arch/x64/src/x64.cpp`
-- `arch/x86/CMakeLists.txt`
-- `arch/x86/README.md`
-- `arch/x86/include/vmp/arch/x86/x86.h`
-- `arch/x86/src/x86.cpp`
-- `backends/CMakeLists.txt`
-- `backends/README.md`
-- `backends/llvm/CMakeLists.txt`
-- `backends/llvm/README.md`
-- `backends/llvm/include/vmp/backend/llvm_backend.h`
-- `backends/llvm/src/llvm_backend.cpp`
-- `backends/rewriter/CMakeLists.txt`
-- `backends/rewriter/README.md`
-- `backends/rewriter/include/vmp/backend/rewriter_backend.h`
-- `backends/rewriter/src/rewriter_backend.cpp`
-- `bindings/README.md`
-- `bindings/cpp/CMakeLists.txt`
-- `bindings/cpp/README.md`
-- `bindings/cpp/include/vmp/bindings/cpp/plugin.h`
-- `bindings/cpp/src/plugin.cpp`
-- `bindings/rust/README.md`
-- `bindings/rust/vmp-macros/Cargo.toml`
-- `bindings/rust/vmp-macros/src/lib.rs`
-- `cmake/vmp_placeholder.h.in`
-- `docs/README.md`
-- `loader/CMakeLists.txt`
-- `loader/README.md`
-- `loader/android/build.gradle.kts`
-- `loader/android/CMakeLists.txt`
-- `loader/android/README.md`
-- `loader/android/include/vmp/loader/android/android_loader.h`
-- `loader/android/src/android_loader.cpp`
-- `loader/ios/CMakeLists.txt`
-- `loader/ios/Package.swift`
-- `loader/ios/README.md`
-- `loader/ios/include/vmp/loader/ios/ios_loader.h`
-- `loader/ios/src/ios_loader.cpp`
-- `loader/linux/CMakeLists.txt`
-- `loader/linux/README.md`
-- `loader/linux/include/vmp/loader/linux/linux_loader.h`
-- `loader/linux/src/linux_loader.cpp`
-- `loader/windows/CMakeLists.txt`
-- `loader/windows/README.md`
-- `loader/windows/include/vmp/loader/windows/windows_loader.h`
-- `loader/windows/src/windows_loader.cpp`
-- `planner/CMakeLists.txt`
-- `planner/README.md`
-- `planner/include/vmp/planner/planner.h`
-- `planner/src/planner.cpp`
+- `bindings/rust/vmp-policy/Cargo.toml`
+- `bindings/rust/vmp-policy/examples/summary.rs`
+- `bindings/rust/vmp-policy/src/lib.rs`
+- `bindings/rust/vmp-policy/tests/cross_check.rs`
 - `policy/CMakeLists.txt`
 - `policy/README.md`
 - `policy/include/vmp/policy/policy_ir.h`
 - `policy/src/policy_ir.cpp`
-- `runtime/CMakeLists.txt`
-- `runtime/README.md`
-- `runtime/audit/CMakeLists.txt`
-- `runtime/audit/README.md`
-- `runtime/audit/include/vmp/runtime/audit/audit.h`
-- `runtime/audit/rust_audit/Cargo.toml`
-- `runtime/audit/rust_audit/src/lib.rs`
-- `runtime/audit/src/audit.cpp`
-- `runtime/integrity/CMakeLists.txt`
-- `runtime/integrity/README.md`
-- `runtime/integrity/include/vmp/runtime/integrity/integrity.h`
-- `runtime/integrity/rust_integrity/Cargo.toml`
-- `runtime/integrity/rust_integrity/src/lib.rs`
-- `runtime/integrity/src/integrity.cpp`
-- `runtime/jit/CMakeLists.txt`
-- `runtime/jit/README.md`
-- `runtime/jit/include/vmp/runtime/jit/jit.h`
-- `runtime/jit/rust_jit/Cargo.toml`
-- `runtime/jit/rust_jit/src/lib.rs`
-- `runtime/jit/src/jit.cpp`
-- `runtime/state/CMakeLists.txt`
-- `runtime/state/README.md`
-- `runtime/state/include/vmp/runtime/state/state.h`
-- `runtime/state/rust_state/Cargo.toml`
-- `runtime/state/rust_state/src/lib.rs`
-- `runtime/state/src/state.cpp`
-- `runtime/strings/CMakeLists.txt`
-- `runtime/strings/README.md`
-- `runtime/strings/include/vmp/runtime/strings/strings.h`
-- `runtime/strings/rust_strings/Cargo.toml`
-- `runtime/strings/rust_strings/src/lib.rs`
-- `runtime/strings/src/strings.cpp`
-- `runtime/vm1/CMakeLists.txt`
-- `runtime/vm1/README.md`
-- `runtime/vm1/include/vmp/runtime/vm1/vm1.h`
-- `runtime/vm1/rust_vm1/Cargo.toml`
-- `runtime/vm1/rust_vm1/src/lib.rs`
-- `runtime/vm1/src/vm1.cpp`
-- `runtime/vm2/CMakeLists.txt`
-- `runtime/vm2/README.md`
-- `runtime/vm2/include/vmp/runtime/vm2/vm2.h`
-- `runtime/vm2/rust_vm2/Cargo.toml`
-- `runtime/vm2/rust_vm2/src/lib.rs`
-- `runtime/vm2/src/vm2.cpp`
 - `tests/CMakeLists.txt`
-- `tests/dummy_test.py`
-- `tests/README.md`
+- `tests/policy/assert_bad_policy.py`
+- `tests/policy/policy_cpp_summary.cpp`
+- `tests/policy/policy_cpp_test.cpp`
+- `tests/policy/examples/good.json`
+- `tests/policy/examples/good_ios_hot_only.json`
+- `tests/policy/examples/bad_vm_func_native.json`
+- `tests/policy/examples/bad_vm_string_sensitivity.json`
+- `tests/policy/examples/bad_vm_string_plaintext_budget.json`
+- `tests/policy/examples/bad_audit_event_type.json`
+- `tests/policy/examples/bad_ios_aggressive.json`
+- `tests/policy/examples/bad_vm2_integrity.json`
 - `tools/CMakeLists.txt`
-- `tools/README.md`
-- `tools/src/vmp_clang.cpp`
-- `tools/src/vmp_clangxx.cpp`
-- `tools/src/vmp_link.cpp`
 - `tools/src/vmp_protect.cpp`
 
-## 构建 / 验证命令与结果
-1. 配置：
+## 验证命令与结果
+1. 依赖安装：
    ```bash
-   cmake -S /workspace/vmp -B /workspace/vmp/build-linux-x64 -DVMP_PLATFORM=linux -DVMP_ARCH=x64
-   ```
-   结果：成功，生成目录 `/workspace/vmp/build-linux-x64`。
-
-2. 构建：
-   ```bash
-   cmake --build /workspace/vmp/build-linux-x64 -j
-   ```
-   结果：成功，全部 placeholder target 构建完成。
-
-3. 入口验证：
-   ```bash
-   /workspace/vmp/build-linux-x64/tools/vmp-protect
-   ```
-   实际输出：
-   ```text
-   NOT_IMPLEMENTED
-   ```
-
-4. CTest：
-   ```bash
-   ctest --test-dir /workspace/vmp/build-linux-x64 --output-on-failure
-   ```
-   结果：3/3 通过。
-
-5. 附加验证（Cargo workspace）：
-   ```bash
-   cd /workspace/vmp && cargo check
+   apt-get install -y nlohmann-json3-dev \
+     librust-serde-dev librust-serde-derive-dev librust-serde-json-dev librust-tempfile-dev
    ```
    结果：成功。
 
-## 遇到的依赖安装记录
-- 执行：
-  ```bash
-  apt-get update
-  apt-get install -y cmake build-essential ninja-build python3 cargo
-  ```
-- 结果：安装 `cmake`、`cmake-data`、`libarchive13`、`libjsoncpp25`、`librhash0`、`libuv1`、`ninja-build`；`build-essential`、`python3`、`cargo` 已存在。
+2. CMake 构建：
+   ```bash
+   cmake -S /workspace/vmp -B /workspace/vmp/build-linux-x64 -DVMP_PLATFORM=linux -DVMP_ARCH=x64
+   cmake --build /workspace/vmp/build-linux-x64 -j
+   ```
+   结果：成功。
 
-## 已知未实现项清单
-- `policy/`：Policy IR 具体字段、解析、校验、序列化未实现。
+3. CTest：
+   ```bash
+   ctest --test-dir /workspace/vmp/build-linux-x64 --output-on-failure
+   ```
+   结果：6/6 通过。
+
+4. Cargo workspace：
+   ```bash
+   cd /workspace/vmp && cargo test --workspace
+   ```
+   结果：全部通过；`vmp-policy` 单元测试与跨语言等价测试通过。
+
+5. CLI 正例：
+   ```bash
+   /workspace/vmp/build-linux-x64/tools/vmp-protect --policy /workspace/vmp/tests/policy/examples/good.json
+   ```
+   实际输出：`OK: policy loaded, 2 entries, schema=v1`
+   退出码：`0`
+
+6. CLI 反例：
+   ```bash
+   /workspace/vmp/build-linux-x64/tools/vmp-protect --policy /workspace/vmp/tests/policy/examples/bad_vm_func_native.json
+   ```
+   实际输出包含：`error[vm_func_native] ...`
+   退出码：`2`
+
+## 本轮未实现项
+- `vmp-protect` 的实际保护流程（除 policy 载入/验证/导出/schema 以外）仍未实现，当前仍可打印 `NOT_IMPLEMENTED`。
 - `analyzer/`：源码级/二进制级分析逻辑未实现。
 - `planner/`：Protection Plan 决策逻辑未实现。
 - `backends/llvm/`：LLVM lifting / pass / 插桩未实现。
 - `backends/rewriter/`：PE/ELF/Mach-O/APK/IPA 重写未实现。
-- `runtime/vm1/`、`runtime/vm2/`：VM ISA、解释器、桥接 ABI 未实现。
-- `runtime/jit/`：JIT 能力门控以外的实现未实现。
-- `runtime/strings/`：字符串保护未实现。
-- `runtime/integrity/`：完整性校验未实现。
-- `runtime/state/`：运行时状态机/画像融合未实现。
-- `runtime/audit/`：审计落盘与 `audit_then_delayed_exit` 协同未实现。
-- `loader/*`：平台生命周期接入未实现。
-- `arch/*`：各 ISA lifting / ABI 适配未实现。
-- `tools/*`：参数解析与驱动逻辑未实现，统一打印 `NOT_IMPLEMENTED`。
-- `bindings/rust/`：过程宏仅保留占位透传。
-- `bindings/cpp/`：attribute plugin/front-end 集成未实现。
-- Android / iOS 工程文件仅为占位接线，未接入真实 native 产物。
+- `runtime/*`、`loader/*`、`arch/*` 真实 VM/JIT/字符串保护/审计/完整性/平台接入未实现。
+- `bindings/cpp/` attribute plugin/front-end 集成未实现；`bindings/rust/vmp-macros` 仍是透传占位。
 
 ## 下一子任务建议
-- 先补 `policy/`、`analyzer/`、`planner/` 三层的最小接口闭环：定义 `PolicyIR` / `ProgramIR` / `ProtectionPlan` 基础类型与最小序列化格式，使 `vmp-protect` 能读取外部策略文件并走通空规划流程。
+- 进入 `analyzer/` + `planner/` 最小闭环：在已有 Policy IR 基础上补 `ProgramIR` / `ProtectionPlan` 最小类型与空规划流，使 `vmp-protect --policy ... <input>` 可以在不做真实保护的前提下走通“读策略 → 产出空计划”路径。
+
+### ci_fix_round_1
+- 改动清单：
+  - `CMakeLists.txt`：在 options 之后、`add_subdirectory(...)` 之前引入 `cmake/third_party.cmake`，并统一调用 `vmp_require_nlohmann_json()`。
+  - `cmake/third_party.cmake`：新增第三方依赖入口，优先 `find_package(nlohmann_json CONFIG QUIET)`，失败后使用 `FetchContent_MakeAvailable` 从 `https://github.com/nlohmann/json.git` 的 `v3.11.3` 拉取。
+  - `policy/CMakeLists.txt`：删除 `find_package(nlohmann_json REQUIRED)`，保留 `target_link_libraries(vmp_policy PUBLIC nlohmann_json::nlohmann_json)`。
+- 两次 configure 结果：
+  - `cmake -S /workspace/vmp -B /workspace/vmp/build-fix`：成功；命中系统已安装的 `nlohmann_json` 包路径。
+  - `cmake -S /workspace/vmp -B /workspace/vmp/build-fix-fetch -DCMAKE_DISABLE_FIND_PACKAGE_nlohmann_json=TRUE`：成功；命中 `FetchContent` 分支并完成 `v3.11.3` 拉取。
+- 其他本轮验证：
+  - `cmake --build /workspace/vmp/build-fix -j`：成功。
+  - `ctest --test-dir /workspace/vmp/build-fix --output-on-failure`：成功，`6/6` 通过。
+  - `cargo test --workspace`：成功。
+- 未完成项：无（本轮子任务范围内）。
+- 下一子任务建议：等待 supervisor 指定下一轮 CI/跨平台修复项。

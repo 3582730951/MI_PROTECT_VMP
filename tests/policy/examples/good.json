@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "defaults": {
+    "language_origin": "cpp",
+    "annotation_origin": "attribute",
+    "protection_domain": "native",
+    "jit_policy": "off",
+    "plaintext_budget": "transient_only",
+    "reaction_policy": "log",
+    "integrity_level": "basic",
+    "platform_caps": ["linux", "x64", "jit_allowed", "execmem_allowed"],
+    "sensitivity_level": "normal",
+    "profile_seed": 123456,
+    "mobile_bridge_mode": "off",
+    "event_types": []
+  },
+  "entries": [
+    {
+      "symbol_or_region": "secure::verify_score",
+      "protection_domain": "vm1",
+      "sensitivity_level": "highly_sensitive",
+      "annotation_tags": ["vm_func", "vm_string"],
+      "event_types": ["hw_breakpoint"],
+      "reaction_policy": "audit_then_delayed_exit",
+      "source_location": {
+        "file": "src/secure.cpp",
+        "line": 42,
+        "column": 3
+      }
+    },
+    {
+      "symbol_or_region": "secret_string_pool",
+      "language_origin": "rust",
+      "annotation_origin": "proc_macro",
+      "protection_domain": "vm2",
+      "jit_policy": "hot_only",
+      "plaintext_budget": "none",
+      "reaction_policy": "audit_only",
+      "integrity_level": "strict",
+      "platform_caps": ["android", "arm64", "jit_allowed", "wx_enforced"],
+      "sensitivity_level": "highly_sensitive",
+      "profile_seed": 987654,
+      "mobile_bridge_mode": "android_jni",
+      "annotation_tags": ["vm_string"],
+      "event_types": ["string_access"],
+      "source_location": {
+        "file": "src/lib.rs",
+        "line": 12,
+        "column": 1
+      }
+    }
+  ]
+}

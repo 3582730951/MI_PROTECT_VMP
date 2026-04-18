@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "defaults": {
+    "language_origin": "rust",
+    "annotation_origin": "proc_macro",
+    "protection_domain": "vm1",
+    "jit_policy": "off",
+    "plaintext_budget": "transient_only",
+    "reaction_policy": "log",
+    "integrity_level": "basic",
+    "platform_caps": ["linux", "x64"],
+    "sensitivity_level": "normal",
+    "profile_seed": 2,
+    "mobile_bridge_mode": "off",
+    "event_types": []
+  },
+  "entries": [
+    {
+      "symbol_or_region": "bad::vm_string_sensitivity",
+      "annotation_tags": ["vm_string"],
+      "source_location": {"file": "bad.rs", "line": 2, "column": 1}
+    }
+  ]
+}

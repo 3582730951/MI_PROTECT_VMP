@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "defaults": {
+    "language_origin": "cpp",
+    "annotation_origin": "external_manifest",
+    "protection_domain": "vm1",
+    "jit_policy": "aggressive",
+    "plaintext_budget": "transient_only",
+    "reaction_policy": "log",
+    "integrity_level": "basic",
+    "platform_caps": ["ios", "arm64"],
+    "sensitivity_level": "sensitive",
+    "profile_seed": 5,
+    "mobile_bridge_mode": "ios_swift_objc",
+    "event_types": []
+  },
+  "entries": [
+    {
+      "symbol_or_region": "bad::ios_aggressive",
+      "annotation_tags": ["vm_func"],
+      "source_location": {"file": "ios.mm", "line": 5, "column": 1}
+    }
+  ]
+}
