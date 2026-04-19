@@ -1,16 +1,22 @@
 #!/usr/bin/env python3
-import json, os, pathlib, shutil, struct, subprocess, sys
+import json
+import pathlib
+import shutil
+import struct
+import subprocess
+import sys
 
-ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 def fail(msg):
     raise SystemExit(msg)
+
 
 def sh(cmd, cwd=None, env=None, check=True):
     res = subprocess.run(cmd, cwd=cwd, env=env, text=True, capture_output=True)
     if check and res.returncode != 0:
         raise SystemExit(f"command failed ({res.returncode}): {' '.join(map(str, cmd))}\nstdout:\n{res.stdout}\nstderr:\n{res.stderr}")
     return res
+
 
 def read_elf_sections(path):
     data = pathlib.Path(path).read_bytes()
@@ -33,13 +39,14 @@ def read_elf_sections(path):
         out[name] = {'offset': sh[4], 'size': sh[5], 'addr': sh[2]}
     return data, out
 
+
 def main():
     if len(sys.argv) != 4:
-        raise SystemExit('usage: rewriter_lift_integration_elf.py <vmp-protect> <source-root> <binary-dir>')
+        raise SystemExit('usage: rewriter_lift_integration_elf_with_loop.py <vmp-protect> <source-root> <binary-dir>')
     tool = pathlib.Path(sys.argv[1])
     source_root = pathlib.Path(sys.argv[2])
     binary_dir = pathlib.Path(sys.argv[3])
-    work = binary_dir / 'tests' / 'rewriter_lift_integration_elf'
+    work = binary_dir / 'tests' / 'rewriter_lift_integration_elf_with_loop'
     if work.exists():
         shutil.rmtree(work)
     work.mkdir(parents=True)
@@ -56,24 +63,27 @@ def main():
 
 #include <vmp/runtime/vm1/vm1.h>
 
-extern "C" __attribute__((visibility("default"), noinline)) unsigned long protected_add(unsigned long a, unsigned long b);
+extern "C" __attribute__((visibility("default"), noinline)) unsigned long protected_loop(unsigned long count, unsigned long step);
 asm(
 ".text\n"
-".global protected_add\n"
-".type protected_add,@function\n"
-"protected_add:\n"
-"  mov %rdi, %rax\n"
-"  mov %rax, %rcx\n"
-"  mov %rcx, %r8\n"
-"  mov %r8, %r9\n"
-"  mov %r9, %rax\n"
-"  xor %r10, %r10\n"
-"  add %r10, %rax\n"
-"  add %rsi, %rax\n"
-"  mov %rax, %rcx\n"
-"  mov %rcx, %rax\n"
+".global protected_loop\n"
+".type protected_loop,@function\n"
+"protected_loop:\n"
+"  mov %rdi, %rcx\n"
+"  mov %rsi, %rbx\n"
+"  xor %eax, %eax\n"
+"  xor %edx, %edx\n"
+"  cmp %rdx, %rcx\n"
+"  jle .Lexit\n"
+"  mov $1, %r8d\n"
+".Lloop:\n"
+"  add %rbx, %rax\n"
+"  sub %r8, %rcx\n"
+"  cmp %rdx, %rcx\n"
+"  jg .Lloop\n"
+".Lexit:\n"
 "  ret\n"
-".size protected_add, .-protected_add\n");
+".size protected_loop, .-protected_loop\n");
 
 struct Bundle { unsigned long id; std::vector<unsigned char> payload; };
 
@@ -125,19 +135,19 @@ extern "C" __attribute__((visibility("default"))) unsigned long vmp_dispatch_vm1
 }
 
 int main() {
-  std::cout << protected_add(2, 3);
+  std::cout << protected_loop(0, 7) << "," << protected_loop(4, 3);
   return 0;
 }
 ''')
     cm = work / 'CMakeLists.txt'
     cm.write_text(f'''
 cmake_minimum_required(VERSION 3.20)
-project(rewriter_lift_sample LANGUAGES CXX ASM)
+project(rewriter_lift_loop_sample LANGUAGES CXX ASM)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_POSITION_INDEPENDENT_CODE OFF)
 add_link_options(-no-pie)
 find_package(nlohmann_json REQUIRED)
-add_executable(rewriter_lift_sample main.cpp)
+add_executable(rewriter_lift_loop_sample main.cpp)
 add_library(vmp_runtime_audit STATIC
   {source_root}/runtime/audit/src/audit.cpp
   {source_root}/runtime/audit/src/reaction.cpp
@@ -169,26 +179,26 @@ add_library(vmp_runtime_vm1 STATIC
   {source_root}/runtime/vm1/src/bridge.cpp)
 target_include_directories(vmp_runtime_vm1 PUBLIC {source_root}/runtime/vm1/include {source_root}/runtime/strings/include {source_root}/runtime/audit/include {source_root}/policy/include {source_root}/arch/common/include)
 target_link_libraries(vmp_runtime_vm1 PUBLIC vmp_runtime_strings vmp_runtime_audit vmp_policy vmp_arch_common nlohmann_json::nlohmann_json)
-target_link_libraries(rewriter_lift_sample PRIVATE vmp_runtime_vm1 vmp_runtime_strings vmp_runtime_audit vmp_policy vmp_arch_common nlohmann_json::nlohmann_json)
+target_link_libraries(rewriter_lift_loop_sample PRIVATE vmp_runtime_vm1 vmp_runtime_strings vmp_runtime_audit vmp_policy vmp_arch_common nlohmann_json::nlohmann_json)
 ''')
     build = work / 'build'
     sh(['cmake', '-S', str(work), '-B', str(build), '-G', 'Ninja'])
     sh(['cmake', '--build', str(build), '-j'])
-    exe = build / 'rewriter_lift_sample'
+    exe = build / 'rewriter_lift_loop_sample'
     policy = work / 'policy.json'
-    out = work / 'rewritten.elf'
+    out = work / 'rewritten_loop.elf'
     policy.write_text(json.dumps({
         'schema_version': 1,
         'defaults': {
             'language_origin': 'binary', 'annotation_origin': 'external_manifest', 'protection_domain': 'native',
             'jit_policy': 'off', 'plaintext_budget': 'transient_only', 'reaction_policy': 'log',
-            'integrity_level': 'basic', 'platform_caps': ['linux','x64'], 'sensitivity_level': 'normal',
+            'integrity_level': 'basic', 'platform_caps': ['linux', 'x64'], 'sensitivity_level': 'normal',
             'profile_seed': 1, 'mobile_bridge_mode': 'off', 'event_types': []
         },
         'entries': [{
-            'symbol_or_region': 'protected_add', 'language_origin': 'binary', 'annotation_origin': 'external_manifest',
+            'symbol_or_region': 'protected_loop', 'language_origin': 'binary', 'annotation_origin': 'external_manifest',
             'protection_domain': 'vm1', 'jit_policy': 'off', 'plaintext_budget': 'transient_only',
-            'reaction_policy': 'log', 'integrity_level': 'basic', 'platform_caps': ['linux','x64'],
+            'reaction_policy': 'log', 'integrity_level': 'basic', 'platform_caps': ['linux', 'x64'],
             'sensitivity_level': 'sensitive', 'profile_seed': 1, 'mobile_bridge_mode': 'off', 'event_types': []
         }]
     }, indent=2))
@@ -196,16 +206,17 @@ target_link_libraries(rewriter_lift_sample PRIVATE vmp_runtime_vm1 vmp_runtime_s
     out.chmod(0o755)
     data, sections = read_elf_sections(out)
     if '.vmpcode' not in sections:
-      fail('missing .vmpcode section')
+        fail('missing .vmpcode section')
     if '.vmpvmthk' not in sections:
-      fail('missing .vmpvmthk section')
+        fail('missing .vmpvmthk section')
     meta = data[sections['.vmpvmthk']['offset']:sections['.vmpvmthk']['offset'] + sections['.vmpvmthk']['size']].rstrip(b'\x00')
     if b'"mode": "lifted"' not in meta:
-      fail('thunk metadata does not record lifted mode')
+        fail('thunk metadata does not record lifted mode')
     run = sh([str(out)])
-    if run.stdout.strip() != '5':
-      fail(f'unexpected program output: {run.stdout!r}')
-    print('rewriter_lift_integration_elf OK')
+    if run.stdout.strip() != '0,12':
+        fail(f'unexpected program output: {run.stdout!r}')
+    print('rewriter_lift_integration_elf_with_loop OK')
+
 
 if __name__ == '__main__':
     main()

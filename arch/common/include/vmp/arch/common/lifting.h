@@ -36,6 +36,9 @@ enum class DiagnosticKind : std::uint8_t {
   malformed_instruction,
   unsupported_thumb_mode,
   invalid_relocation,
+  out_of_range,
+  unresolved_label,
+  duplicate_label,
 };
 
 struct Diagnostic {

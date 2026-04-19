@@ -1,5 +1,7 @@
 #include <vmp/runtime/vm1/vm1.h>
 
+#include <vmp/arch/common/label_resolver.h>
+
 #include <algorithm>
 #include <atomic>
 #include <cctype>
@@ -24,6 +26,7 @@ namespace vmp::runtime::vm1 {
 namespace {
 
 using ByteVector = std::vector<std::uint8_t>;
+namespace common = vmp::arch::common;
 std::atomic<std::uint64_t> g_next_vm1_module_id{1};
 
 
@@ -519,8 +522,14 @@ struct ParsedInstruction {
   std::uint32_t pc = 0;
 };
 
+struct LabelDefinition {
+  std::string name;
+  std::uint32_t pc = 0;
+};
+
 struct AssemblyProgram {
   std::vector<ParsedInstruction> instructions;
+  std::vector<LabelDefinition> label_definitions;
   std::map<std::string, std::uint32_t> labels;
   std::map<std::uint32_t, std::string> strings;
 };
@@ -544,7 +553,8 @@ AssemblyProgram parse_assembly(std::string_view source) {
       if (maybe_label.find(' ') != std::string::npos || maybe_label.find('\t') != std::string::npos) {
         break;
       }
-      program.labels[maybe_label] = pc;
+      program.label_definitions.push_back(LabelDefinition{maybe_label, pc});
+      program.labels.emplace(maybe_label, pc);
       line = trim(line.substr(colon + 1));
       if (line.empty()) {
         break;
@@ -601,11 +611,25 @@ std::uint32_t parse_string_id_token(const std::string& token) {
 
 std::uint32_t resolve_target(const std::string& token, const std::map<std::string, std::uint32_t>& labels) {
   if (!token.empty() && token[0] == '@') {
-    const auto it = labels.find(token.substr(1));
-    if (it == labels.end()) {
-      throw std::runtime_error("vm1 asm: unknown label '" + token + "'");
+    std::vector<std::uint8_t> scratch(4u, 0u);
+    common::LabelResolver resolver(&scratch);
+    for (const auto& [name, pc] : labels) {
+      resolver.define(common::Label{name}, pc);
     }
-    return it->second;
+    resolver.reference(common::Fixup{
+        0,
+        common::FixupField::jump_offset_s32,
+        common::Label{token.substr(1)},
+        common::Range{},
+        0,
+        0,
+    });
+    const auto result = resolver.resolve();
+    if (!result.ok()) {
+      throw common::ResolutionError(result);
+    }
+    std::size_t offset = 0;
+    return read_u32(scratch, offset);
   }
   return static_cast<std::uint32_t>(parse_u64_value(token));
 }
@@ -930,6 +954,7 @@ Vm1Module assemble_module_text(std::string_view text, std::uint16_t module_flags
   module.runtime_id = g_next_vm1_module_id.fetch_add(1);
   module.module_flags = module_flags;
   module.entry_pc = 0;
+  common::LabelResolver resolver(&module.code);
   for (const auto& [id, value] : program.strings) {
     if (module.const_pool.size() <= id) {
       module.const_pool.resize(static_cast<std::size_t>(id) + 1u);
@@ -937,7 +962,11 @@ Vm1Module assemble_module_text(std::string_view text, std::uint16_t module_flags
     module.const_pool[id].kind = ConstKind::transient_string;
     module.const_pool[id].bytes.assign(value.begin(), value.end());
   }
-  for (const auto& inst : program.instructions) {
+  for (const auto& definition : program.label_definitions) {
+    resolver.define(common::Label{definition.name}, definition.pc);
+  }
+  for (std::size_t inst_index = 0; inst_index < program.instructions.size(); ++inst_index) {
+    const auto& inst = program.instructions[inst_index];
     const auto opcode = parse_opcode(inst.op);
     append_u16(module.code, static_cast<std::uint16_t>(opcode));
     switch (opcode) {
@@ -960,7 +989,20 @@ Vm1Module assemble_module_text(std::string_view text, std::uint16_t module_flags
       }
       case Opcode::ldi_u64: {
         module.code.push_back(parse_general_register(inst.operands.at(0)));
-        append_u64(module.code, parse_u64_or_label(inst.operands.at(1), program.labels));
+        if (!inst.operands.at(1).empty() && inst.operands.at(1).front() == '@') {
+          const auto patch_offset = module.code.size();
+          append_u64(module.code, 0);
+          resolver.reference(common::Fixup{
+              inst_index,
+              common::FixupField::address_materialize_s64,
+              common::Label{inst.operands.at(1).substr(1)},
+              common::Range{0, std::numeric_limits<std::int64_t>::max()},
+              inst.pc,
+              patch_offset,
+          });
+        } else {
+          append_u64(module.code, parse_u64_value(inst.operands.at(1)));
+        }
         break;
       }
       case Opcode::ldi_f64: {
@@ -1090,7 +1132,20 @@ Vm1Module assemble_module_text(std::string_view text, std::uint16_t module_flags
         break;
       }
       case Opcode::jmp: {
-        append_u32(module.code, resolve_target(inst.operands.at(0), program.labels));
+        if (!inst.operands.at(0).empty() && inst.operands.at(0).front() == '@') {
+          const auto patch_offset = module.code.size();
+          append_u32(module.code, 0);
+          resolver.reference(common::Fixup{
+              inst_index,
+              common::FixupField::jump_offset_s32,
+              common::Label{inst.operands.at(0).substr(1)},
+              common::Range{},
+              inst.pc,
+              patch_offset,
+          });
+        } else {
+          append_u32(module.code, static_cast<std::uint32_t>(parse_u64_value(inst.operands.at(0))));
+        }
         break;
       }
       case Opcode::jeq:
@@ -1101,11 +1156,37 @@ Vm1Module assemble_module_text(std::string_view text, std::uint16_t module_flags
       case Opcode::jge: {
         module.code.push_back(parse_general_register(inst.operands.at(0)));
         module.code.push_back(parse_general_register(inst.operands.at(1)));
-        append_u32(module.code, resolve_target(inst.operands.at(2), program.labels));
+        if (!inst.operands.at(2).empty() && inst.operands.at(2).front() == '@') {
+          const auto patch_offset = module.code.size();
+          append_u32(module.code, 0);
+          resolver.reference(common::Fixup{
+              inst_index,
+              common::FixupField::jump_offset_s32,
+              common::Label{inst.operands.at(2).substr(1)},
+              common::Range{},
+              inst.pc,
+              patch_offset,
+          });
+        } else {
+          append_u32(module.code, static_cast<std::uint32_t>(parse_u64_value(inst.operands.at(2))));
+        }
         break;
       }
       case Opcode::call: {
-        append_u32(module.code, resolve_target(inst.operands.at(0), program.labels));
+        if (!inst.operands.at(0).empty() && inst.operands.at(0).front() == '@') {
+          const auto patch_offset = module.code.size();
+          append_u32(module.code, 0);
+          resolver.reference(common::Fixup{
+              inst_index,
+              common::FixupField::call_offset_s32,
+              common::Label{inst.operands.at(0).substr(1)},
+              common::Range{},
+              inst.pc,
+              patch_offset,
+          });
+        } else {
+          append_u32(module.code, static_cast<std::uint32_t>(parse_u64_value(inst.operands.at(0))));
+        }
         module.code.push_back(static_cast<std::uint8_t>(inst.operands.size() >= 2 ? parse_u64_value(inst.operands.at(1)) : 0u));
         break;
       }
@@ -1152,6 +1233,10 @@ Vm1Module assemble_module_text(std::string_view text, std::uint16_t module_flags
         break;
       }
     }
+  }
+  const auto resolve_result = resolver.resolve();
+  if (!resolve_result.ok()) {
+    throw common::ResolutionError(resolve_result);
   }
   return module;
 }

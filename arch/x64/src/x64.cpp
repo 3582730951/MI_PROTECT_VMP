@@ -1,5 +1,7 @@
 #include <vmp/arch/x64/x64.h>
 
+#include <vmp/arch/common/label_resolver.h>
+
 #include <array>
 #include <sstream>
 #include <stdexcept>
@@ -318,6 +320,15 @@ void carry_relocation(vm2::Vm2Module& module, const common::FunctionView& view, 
   }
 }
 
+common::DiagnosticKind map_resolver_kind(common::ResolverDiagnosticKind kind) {
+  switch (kind) {
+    case common::ResolverDiagnosticKind::out_of_range: return common::DiagnosticKind::out_of_range;
+    case common::ResolverDiagnosticKind::unresolved_label: return common::DiagnosticKind::unresolved_label;
+    case common::ResolverDiagnosticKind::duplicate_label: return common::DiagnosticKind::duplicate_label;
+  }
+  return common::DiagnosticKind::malformed_instruction;
+}
+
 }  // namespace
 
 std::string X64Lifter::isa_name() const { return "x86_64"; }
@@ -465,6 +476,11 @@ common::LiftedFunction X64Lifter::lift(const common::FunctionView& view) const {
   }
   try {
     lifted.module = vm1::assemble_module_text(text.str());
+  } catch (const common::ResolutionError& ex) {
+    for (const auto& diagnostic : ex.result().diagnostics) {
+      lifted.diagnostics.push_back({map_resolver_kind(diagnostic.kind), diagnostic.instruction_index, diagnostic.detail});
+    }
+    return lifted;
   } catch (const std::exception& ex) {
     lifted.diagnostics.push_back({common::DiagnosticKind::malformed_instruction, 0, ex.what()});
     return lifted;

@@ -657,6 +657,66 @@ set_target_properties(pc_relative_arm64 PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CM
 add_test(NAME pc_relative_arm64 COMMAND $<TARGET_FILE:pc_relative_arm64>)
 set_tests_properties(pc_relative_arm64 PROPERTIES PASS_REGULAR_EXPRESSION "pc_relative_arm64 OK")
 
+add_executable(label_resolver_basic ${CMAKE_CURRENT_SOURCE_DIR}/arch/label_resolver_basic.cpp)
+target_link_libraries(label_resolver_basic PRIVATE vmp_arch_common vmp_runtime_vm1)
+set_target_properties(label_resolver_basic PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
+add_test(NAME label_resolver_basic COMMAND $<TARGET_FILE:label_resolver_basic>)
+set_tests_properties(label_resolver_basic PROPERTIES PASS_REGULAR_EXPRESSION "label_resolver_basic OK")
+
+add_executable(label_resolver_out_of_range ${CMAKE_CURRENT_SOURCE_DIR}/arch/label_resolver_out_of_range.cpp)
+target_link_libraries(label_resolver_out_of_range PRIVATE vmp_arch_common vmp_runtime_vm1)
+set_target_properties(label_resolver_out_of_range PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
+add_test(NAME label_resolver_out_of_range COMMAND $<TARGET_FILE:label_resolver_out_of_range>)
+set_tests_properties(label_resolver_out_of_range PROPERTIES PASS_REGULAR_EXPRESSION "label_resolver_out_of_range OK")
+
+add_executable(label_resolver_duplicate ${CMAKE_CURRENT_SOURCE_DIR}/arch/label_resolver_duplicate.cpp)
+target_link_libraries(label_resolver_duplicate PRIVATE vmp_arch_common)
+set_target_properties(label_resolver_duplicate PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
+add_test(NAME label_resolver_duplicate COMMAND $<TARGET_FILE:label_resolver_duplicate>)
+set_tests_properties(label_resolver_duplicate PROPERTIES PASS_REGULAR_EXPRESSION "label_resolver_duplicate OK")
+
+add_executable(label_resolver_unresolved ${CMAKE_CURRENT_SOURCE_DIR}/arch/label_resolver_unresolved.cpp)
+target_link_libraries(label_resolver_unresolved PRIVATE vmp_arch_common)
+set_target_properties(label_resolver_unresolved PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
+add_test(NAME label_resolver_unresolved COMMAND $<TARGET_FILE:label_resolver_unresolved>)
+set_tests_properties(label_resolver_unresolved PROPERTIES PASS_REGULAR_EXPRESSION "label_resolver_unresolved OK")
+
+add_executable(lifter_end_to_end_x86 ${CMAKE_CURRENT_SOURCE_DIR}/arch/lifter_end_to_end_x86.cpp)
+target_link_libraries(lifter_end_to_end_x86 PRIVATE vmp_arch_x86 vmp_runtime_vm1)
+set_target_properties(lifter_end_to_end_x86 PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
+add_test(NAME lifter_end_to_end_x86 COMMAND $<TARGET_FILE:lifter_end_to_end_x86>)
+set_tests_properties(lifter_end_to_end_x86 PROPERTIES PASS_REGULAR_EXPRESSION "lifter_end_to_end_x86 OK")
+
+add_executable(lifter_end_to_end_x64 ${CMAKE_CURRENT_SOURCE_DIR}/arch/lifter_end_to_end_x64.cpp)
+target_link_libraries(lifter_end_to_end_x64 PRIVATE vmp_arch_x64 vmp_runtime_vm1 vmp_runtime_vm2)
+set_target_properties(lifter_end_to_end_x64 PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
+add_test(NAME lifter_end_to_end_x64 COMMAND $<TARGET_FILE:lifter_end_to_end_x64>)
+set_tests_properties(lifter_end_to_end_x64 PROPERTIES PASS_REGULAR_EXPRESSION "lifter_end_to_end_x64 OK")
+
+add_executable(lifter_end_to_end_arm ${CMAKE_CURRENT_SOURCE_DIR}/arch/lifter_end_to_end_arm.cpp)
+target_link_libraries(lifter_end_to_end_arm PRIVATE vmp_arch_arm vmp_runtime_vm1)
+set_target_properties(lifter_end_to_end_arm PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
+add_test(NAME lifter_end_to_end_arm COMMAND $<TARGET_FILE:lifter_end_to_end_arm>)
+set_tests_properties(lifter_end_to_end_arm PROPERTIES PASS_REGULAR_EXPRESSION "lifter_end_to_end_arm OK")
+
+add_executable(lifter_end_to_end_arm64 ${CMAKE_CURRENT_SOURCE_DIR}/arch/lifter_end_to_end_arm64.cpp)
+target_link_libraries(lifter_end_to_end_arm64 PRIVATE vmp_arch_arm64 vmp_runtime_vm1)
+set_target_properties(lifter_end_to_end_arm64 PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
+add_test(NAME lifter_end_to_end_arm64 COMMAND $<TARGET_FILE:lifter_end_to_end_arm64>)
+set_tests_properties(lifter_end_to_end_arm64 PROPERTIES PASS_REGULAR_EXPRESSION "lifter_end_to_end_arm64 OK")
+
+add_executable(lifter_determinism ${CMAKE_CURRENT_SOURCE_DIR}/arch/lifter_determinism.cpp)
+target_link_libraries(lifter_determinism PRIVATE vmp_arch_x86 vmp_arch_x64 vmp_arch_arm vmp_arch_arm64 vmp_runtime_vm1 vmp_runtime_vm2)
+set_target_properties(lifter_determinism PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
+add_test(NAME lifter_determinism COMMAND $<TARGET_FILE:lifter_determinism>)
+set_tests_properties(lifter_determinism PROPERTIES PASS_REGULAR_EXPRESSION "lifter_determinism OK")
+
+add_executable(lift_basic_hash_regression ${CMAKE_CURRENT_SOURCE_DIR}/arch/lift_basic_hash_regression.cpp)
+target_link_libraries(lift_basic_hash_regression PRIVATE vmp_arch_x86 vmp_arch_x64 vmp_arch_arm vmp_arch_arm64 vmp_runtime_vm1 vmp_runtime_vm2)
+set_target_properties(lift_basic_hash_regression PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
+add_test(NAME lift_basic_hash_regression COMMAND $<TARGET_FILE:lift_basic_hash_regression>)
+set_tests_properties(lift_basic_hash_regression PROPERTIES PASS_REGULAR_EXPRESSION "lift_basic_hash_regression OK")
+
 add_executable(arm64_lift_basic ${CMAKE_CURRENT_SOURCE_DIR}/arch/arm64_lift_basic.cpp)
 target_link_libraries(arm64_lift_basic PRIVATE vmp_arch_arm64 vmp_runtime_vm1)
 set_target_properties(arm64_lift_basic PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
@@ -678,6 +738,9 @@ set_tests_properties(lift_relocation_carrying PROPERTIES PASS_REGULAR_EXPRESSION
 add_test(NAME rewriter_lift_integration_elf
   COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/arch/rewriter_lift_integration_elf.py $<TARGET_FILE:vmp-protect> ${CMAKE_SOURCE_DIR} ${CMAKE_BINARY_DIR})
 set_tests_properties(rewriter_lift_integration_elf PROPERTIES PASS_REGULAR_EXPRESSION "rewriter_lift_integration_elf OK")
+add_test(NAME rewriter_lift_integration_elf_with_loop
+  COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/arch/rewriter_lift_integration_elf_with_loop.py $<TARGET_FILE:vmp-protect> ${CMAKE_SOURCE_DIR} ${CMAKE_BINARY_DIR})
+set_tests_properties(rewriter_lift_integration_elf_with_loop PROPERTIES PASS_REGULAR_EXPRESSION "rewriter_lift_integration_elf_with_loop OK")
 
 
 # final matrix (plan §17)

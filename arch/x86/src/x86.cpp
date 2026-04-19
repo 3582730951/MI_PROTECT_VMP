@@ -1,5 +1,7 @@
 #include <vmp/arch/x86/x86.h>
 
+#include <vmp/arch/common/label_resolver.h>
+
 #include <array>
 #include <sstream>
 #include <stdexcept>
@@ -30,6 +32,15 @@ struct Instruction {
 constexpr std::uint8_t kTmp0 = 30;
 constexpr std::uint8_t kTmp1 = 31;
 std::uint8_t reg_index(int reg) { static constexpr std::array<std::uint8_t,8> map{{0,1,2,3,4,5,6,7}}; return map[reg&7]; }
+
+common::DiagnosticKind map_resolver_kind(common::ResolverDiagnosticKind kind) {
+  switch (kind) {
+    case common::ResolverDiagnosticKind::out_of_range: return common::DiagnosticKind::out_of_range;
+    case common::ResolverDiagnosticKind::unresolved_label: return common::DiagnosticKind::unresolved_label;
+    case common::ResolverDiagnosticKind::duplicate_label: return common::DiagnosticKind::duplicate_label;
+  }
+  return common::DiagnosticKind::malformed_instruction;
+}
 
 struct Decoder {
   const common::FunctionView& view; std::size_t off=0;
@@ -111,7 +122,15 @@ common::LiftedFunction X86Lifter::lift(const common::FunctionView& view) const {
   }
   std::unordered_map<std::uint64_t,std::string> labels; for(const auto& i:insns) if(i.mnemonic=="jcc"||i.mnemonic=="jmp"||i.mnemonic=="call") labels.emplace(i.target,label(i.target));
   std::ostringstream out; out<<"entry:\n"; Operand cmp_l{}, cmp_r{}; bool have_cmp=false; for(const auto& i:insns){ auto addr=view.base_addr+i.offset; if(labels.count(addr)) out<<labels[addr]<<":\n"; if(i.mnemonic=="mov"){ loadop(out,i.src,kTmp0); storeop(out,i.dst,kTmp0); if(i.src.kind==Operand::Kind::imm){ if(const auto* r=common::find_overlapping_relocation(view,i.offset+i.size-4,4)){ vm1::ConstPoolEntry e; e.kind=vm1::ConstKind::none; auto p=common::const_tag_payload(*r); e.bytes.assign(p.begin(),p.end()); lifted.module.const_pool.push_back(std::move(e)); } } } else if(i.mnemonic=="add"||i.mnemonic=="sub"||i.mnemonic=="and"||i.mnemonic=="or"||i.mnemonic=="xor"){ loadop(out,i.dst,kTmp0); loadop(out,i.src,kTmp1); out<<"  "<<i.mnemonic<<" vr"<<unsigned(kTmp0)<<", vr"<<unsigned(kTmp0)<<", vr"<<unsigned(kTmp1)<<"\n"; storeop(out,i.dst,kTmp0);} else if(i.mnemonic=="imul"){ loadop(out,i.dst,kTmp0); loadop(out,i.src,kTmp1); out<<"  mul vr"<<unsigned(kTmp0)<<", vr"<<unsigned(kTmp0)<<", vr"<<unsigned(kTmp1)<<"\n"; if(i.target){ out<<"  ldi_u64 vr"<<unsigned(kTmp1)<<", "<<i.target<<"\n"; out<<"  mul vr"<<unsigned(kTmp0)<<", vr"<<unsigned(kTmp0)<<", vr"<<unsigned(kTmp1)<<"\n"; } storeop(out,i.dst,kTmp0);} else if(i.mnemonic=="shl"||i.mnemonic=="shr"||i.mnemonic=="sar"){ loadop(out,i.dst,kTmp0); loadop(out,i.src,kTmp1); out<<"  "<<i.mnemonic<<" vr"<<unsigned(kTmp0)<<", vr"<<unsigned(kTmp0)<<", vr"<<unsigned(kTmp1)<<"\n"; storeop(out,i.dst,kTmp0);} else if(i.mnemonic=="cmp"){ cmp_l=i.dst; cmp_r=i.src; have_cmp=true; } else if(i.mnemonic=="jcc"){ auto n=jcc_name(i.jcc); if(!have_cmp||n.empty()){ lifted.diagnostics.push_back({common::DiagnosticKind::unsupported_opcode,i.offset,"x86_lifter: unsupported jcc"}); return lifted;} loadop(out,cmp_l,kTmp0); loadop(out,cmp_r,kTmp1); out<<"  "<<n<<" vr"<<unsigned(kTmp0)<<", vr"<<unsigned(kTmp1)<<", @"<<labels.at(i.target)<<"\n"; } else if(i.mnemonic=="jmp"){ out<<"  jmp @"<<labels.at(i.target)<<"\n"; } else if(i.mnemonic=="call"){ out<<"  call @"<<labels.at(i.target)<<", 0\n"; } else if(i.mnemonic=="push"){ loadop(out,i.src,kTmp0); out<<"  ldi_u64 vr"<<unsigned(kTmp1)<<", 4\n  sub vr4, vr4, vr"<<unsigned(kTmp1)<<"\n"; out<<"  store_mem32 [vr4+0], vr"<<unsigned(kTmp0)<<"\n"; } else if(i.mnemonic=="pop"){ out<<"  load_mem32 vr"<<unsigned(i.dst.reg)<<", [vr4+0]\n"; out<<"  ldi_u64 vr"<<unsigned(kTmp1)<<", 4\n  add vr4, vr4, vr"<<unsigned(kTmp1)<<"\n"; } else if(i.mnemonic=="ret"){ out<<"  ret\n"; } else { lifted.diagnostics.push_back({common::DiagnosticKind::unsupported_opcode,i.offset,"x86_lifter: unsupported instruction"}); return lifted; } }
-  try{ lifted.module = vm1::assemble_module_text(out.str()); }catch(const std::exception& ex){ lifted.diagnostics.push_back({common::DiagnosticKind::malformed_instruction,0,ex.what()}); }
+  try {
+    lifted.module = vm1::assemble_module_text(out.str());
+  } catch (const common::ResolutionError& ex) {
+    for (const auto& diagnostic : ex.result().diagnostics) {
+      lifted.diagnostics.push_back({map_resolver_kind(diagnostic.kind), diagnostic.instruction_index, diagnostic.detail});
+    }
+  } catch (const std::exception& ex) {
+    lifted.diagnostics.push_back({common::DiagnosticKind::malformed_instruction,0,ex.what()});
+  }
   return lifted;
 }
 const char* ArchFacade::status() const noexcept { return "x86_ready"; }

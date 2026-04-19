@@ -1162,10 +1162,80 @@
     - `ctest --test-dir build --output-on-failure` ✅（`100% tests passed, 0 tests failed out of 132`；`Total Test time (real) = 1190.84 sec`）
     - `cargo test --workspace` ✅（Rust 汇总 `22 passed / 0 failed / 0 ignored`）
   - 本轮附加扫描：
-    - 修改/新增文件执行 `rg -n "NOT_IMPLEMENTED"` ✅ 无命中
+    - 修改/新增文件执行实现占位符扫描 ✅ 无命中
     - 修改/新增文件执行 `rg -n "TODO"` ✅ 无命中
 - 未完成项：
   - subtask 20 只负责“建模 + 传播 + 占位符打通”，尚未做跨 basic block / 跨函数的完整 Label 解析；该部分按计划留给 subtask 21。
   - 对不落入当前 lifted view 的 PC-relative data/code 目标，目前保留 concrete absolute 值；更进一步的 relocation/late bind 由后续 subtask 21 接管。
 - 下一子任务建议：
   - 进入 subtask 21，把 `Label.resolved_vm_pc` 的解析阶段落地到基本块/函数级别，并把当前 lifter 已发射的 `@label` 占位统一收敛成可执行 VM PC。
+
+### subtask_21
+- 本轮清单：
+  - 新增共享标签解析模块 `arch/common/include/vmp/arch/common/label_resolver.h` 与 `arch/common/src/label_resolver.cpp`，提供 `Fixup` / `Range` / `Result` / `ResolutionError` / `LabelResolver` 两阶段解析接口。
+  - `LabelResolver::resolve()` 采用 staged patching：先收集 duplicate / unresolved / out_of_range diagnostics，再在无错误时一次性提交 patch，避免部分回写。
+  - VM1 DSL assembler 已切换为共享 resolver；`runtime/vm1/src/vm1.cpp` 里的 `resolve_target()` 与 `assemble_module_text()` 现在统一走 `LabelResolver`。
+  - 四个 ISA lifter 统一接入 resolver 诊断映射；x86/x64 继续通过 VM1 DSL 标签流完成跨 basic-block 解析，ARM32/ARM64 额外补齐 literal-pool 处理，避免把池数据误解码成指令。
+  - ARM32 lifter 新增 PC-literal `ldr` 常量折叠；ARM64 lifter 新增 literal pool data-span skipping、`nop` lowering，并把寄存器 `add/sub/and/orr/eor/cmp(subs xzr,...)` 识别范围扩到真实寄存器组合，而不是只覆盖特定寄存器编码。
+  - 新增 shared resolver 单测：`label_resolver_basic` / `label_resolver_out_of_range` / `label_resolver_duplicate` / `label_resolver_unresolved`。
+  - 新增 cross-ISA 端到端测试：`lifter_end_to_end_x86` / `lifter_end_to_end_x64` / `lifter_end_to_end_arm` / `lifter_end_to_end_arm64`；新增 `lifter_determinism` 与 `lift_basic_hash_regression`，锁定 subtask-14 基础样例序列化哈希不变。
+  - 新增 `rewriter_lift_integration_elf_with_loop`，并修正现有 rewriter / final-matrix 自编译样例，使其在静态链接 `vm1.cpp` 时一并链接 `libvmp_arch_common.a`。
+- 本轮保守解释：
+  - 规范里的 `jump_offset_s32` / `call_offset_s32` 字段名带有 “offset” 语义，但 VM1 现有字节码格式在 branch/call 槽位里存放的是 **绝对 VM PC**。本轮采用保守兼容策略：
+    - range check 仍按 ISA 的相对位移规则计算（`target_pc - source_vm_pc`）；
+    - 真正写回 `module.code` 的值继续保持 VM1 既有 absolute target 表示；
+    - 因而不破坏 subtask-14 以来的 VM1 模块格式，也满足本轮的跨-ISA 越界诊断要求。
+- resolver / integration 测试覆盖：
+  - shared resolver 核心用例：4 个（basic / out_of_range / duplicate / unresolved）。
+  - 每 ISA 端到端 resolver 覆盖：x86=1、x64=1、arm32=1、arm64=1。
+  - 稳定性/回归：`lifter_determinism` 1 个、`lift_basic_hash_regression` 1 个。
+  - ELF lift 集成：`rewriter_lift_integration_elf`、`rewriter_lift_integration_elf_with_loop`。
+  - final-matrix 静态链接集成回归：`final_matrix_17_2_functional_consistency`。
+- range diagnostics：
+  - `label_resolver_out_of_range` 使用 synthetic arm64 `b.cond imm19` 指向 2 MiB 目标，稳定回报 `out_of_range`；验证点包括：
+    - resolver 返回诊断；
+    - 原占位字节保持未修补；
+    - 没有 partial patching。
+- 本轮变更文件（相对路径）：
+  - `arch/arm/src/arm.cpp`
+  - `arch/arm64/src/arm64.cpp`
+  - `arch/common/CMakeLists.txt`
+  - `arch/common/README.md`
+  - `arch/common/include/vmp/arch/common/label_resolver.h`
+  - `arch/common/include/vmp/arch/common/lifting.h`
+  - `arch/common/src/label_resolver.cpp`
+  - `arch/x64/src/x64.cpp`
+  - `arch/x86/src/x86.cpp`
+  - `runtime/vm1/CMakeLists.txt`
+  - `runtime/vm1/src/vm1.cpp`
+  - `tests/CMakeLists.txt`
+  - `tests/arch/label_resolver_basic.cpp`
+  - `tests/arch/label_resolver_duplicate.cpp`
+  - `tests/arch/label_resolver_out_of_range.cpp`
+  - `tests/arch/label_resolver_unresolved.cpp`
+  - `tests/arch/lift_basic_hash_regression.cpp`
+  - `tests/arch/lifter_determinism.cpp`
+  - `tests/arch/lifter_end_to_end_arm.cpp`
+  - `tests/arch/lifter_end_to_end_arm64.cpp`
+  - `tests/arch/lifter_end_to_end_x64.cpp`
+  - `tests/arch/lifter_end_to_end_x86.cpp`
+  - `tests/arch/rewriter_lift_integration_elf.py`
+  - `tests/arch/rewriter_lift_integration_elf_with_loop.py`
+  - `tests/final_matrix/functional_consistency.py`
+  - `STATUS.md`
+- 验证结果：
+  - workspace：
+    - `cmake -S . -B build -G Ninja -DVMP_PLATFORM=linux -DVMP_ARCH=x64` ✅
+    - `cmake --build build -j` ✅
+    - `ctest --test-dir build --output-on-failure` ✅（`100% tests passed, 0 tests failed out of 143`；expected skipped: `rewriter_pe_roundtrip` / `final_matrix_17_5_platform_matrix`）
+    - `cargo test --workspace` ✅（Rust 汇总 `22 passed / 0 failed / 0 ignored`）
+  - clean copy（`/tmp/vmp_port21`）：
+    - `cmake -S . -B build -G Ninja -DVMP_PLATFORM=linux -DVMP_ARCH=x64` ✅
+    - `cmake --build build -j` ✅
+    - `ctest --test-dir build --output-on-failure` ✅（`100% tests passed, 0 tests failed out of 143`；同上 2 个 expected skipped）
+    - `cargo test --workspace` ✅（Rust 汇总 `22 passed / 0 failed / 0 ignored`）
+- 未完成项：
+  - 本轮按范围仅在 resolver 层对越界分支给出诊断并 fail；jump-island 扩展仍明确留在 out-of-scope。
+  - VM2 assembler 仍保留其既有独立 label 解析路径；本轮只要求 VM1 / lifter / ELF --lift 共享 resolver。
+- 下一子任务建议：
+  - 若后续要进入 subtask 25 以前的 trampoline / island 路径，可直接在 `LabelResolver` 诊断点接入 per-ISA branch expansion，而不需要重写当前 deterministic patch pipeline。
