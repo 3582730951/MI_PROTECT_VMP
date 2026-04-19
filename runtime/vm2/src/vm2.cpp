@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <vmp/runtime/integrity/crc32.h>
+#include <vmp/runtime/strings/cipher.h>
 #include <array>
 #include <atomic>
 #include <cctype>
@@ -12,7 +13,9 @@
 #include <fstream>
 #include <iomanip>
 #include <map>
+#include <numeric>
 #include <optional>
+#include <random>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -25,7 +28,16 @@ namespace {
 using ByteVector = std::vector<std::uint8_t>;
 std::atomic<std::uint64_t> g_next_vm2_module_id{1};
 
-constexpr std::size_t kVm2HeaderSize = 4u + 2u + 2u + 4u + 4u + 4u + 4u;
+void append_u16(ByteVector& out, std::uint16_t value);
+void append_u32(ByteVector& out, std::uint32_t value);
+std::uint16_t read_u16(const ByteVector& bytes, std::size_t& offset);
+std::uint32_t read_u32(const ByteVector& bytes, std::size_t& offset);
+std::size_t instruction_size(Opcode opcode);
+
+constexpr std::size_t kVm2LegacyHeaderSize = 4u + 2u + 2u + 4u + 4u + 4u + 4u;
+constexpr std::size_t kVm2HeaderSize = kVm2LegacyHeaderSize + kOpcodeMapSeedSize;
+constexpr char kOpcodeMapPurposeTag[] = "opcode_map_v1";
+constexpr std::array<std::uint8_t, 8> kVm2OpcodeMarkerMagic{{'O', 'P', 'M', 'A', 'P', 'C', 'R', 'C'}};
 
 std::string hex_u32(std::uint32_t value) {
   std::ostringstream oss;
@@ -40,6 +52,117 @@ void append_module_crc_mismatch_audit(const std::string& note) noexcept {
     writer.flush();
   } catch (...) {
   }
+}
+
+void append_opcode_map_invalid_audit(const std::string& note) noexcept {
+  try {
+    vmp::runtime::audit::AuditWriter writer(vmp::runtime::audit::AuditWriter::default_path());
+    writer.append(vmp::runtime::audit::make_event("opcode_map_invalid", note, 0, "vm2"));
+    writer.flush();
+  } catch (...) {
+  }
+}
+
+std::size_t vm2_header_size_for_version(std::uint16_t version) {
+  if (version == kVm2LegacyVersion) return kVm2LegacyHeaderSize;
+  if (version == kVm2Version) return kVm2HeaderSize;
+  throw std::runtime_error("vm2: unsupported version");
+}
+
+bool seed_is_zero(const std::array<std::uint8_t, kOpcodeMapSeedSize>& seed) {
+  return std::all_of(seed.begin(), seed.end(), [](std::uint8_t byte) { return byte == 0; });
+}
+
+std::array<std::uint8_t, kOpcodeMapSeedSize> random_opcode_seed() {
+  std::array<std::uint8_t, kOpcodeMapSeedSize> seed{};
+  std::random_device rd;
+  for (auto& byte : seed) {
+    byte = static_cast<std::uint8_t>(rd());
+  }
+  return seed;
+}
+
+Vm2ConstPoolEntry make_opcode_marker_entry(std::uint32_t marker_crc32) {
+  Vm2ConstPoolEntry entry{};
+  std::copy(kVm2OpcodeMarkerMagic.begin(), kVm2OpcodeMarkerMagic.end(), entry.bytes.begin());
+  for (int i = 0; i < 4; ++i) {
+    entry.bytes[8 + static_cast<std::size_t>(i)] = static_cast<std::uint8_t>((marker_crc32 >> (8 * i)) & 0xFFu);
+    entry.bytes[12 + static_cast<std::size_t>(i)] =
+        static_cast<std::uint8_t>((~marker_crc32 >> (8 * i)) & 0xFFu);
+  }
+  return entry;
+}
+
+bool parse_opcode_marker_entry(const Vm2ConstPoolEntry& entry, std::uint32_t& marker_crc32) {
+  if (!std::equal(kVm2OpcodeMarkerMagic.begin(), kVm2OpcodeMarkerMagic.end(), entry.bytes.begin())) {
+    return false;
+  }
+  std::uint32_t marker = 0;
+  std::uint32_t inverse = 0;
+  for (int i = 0; i < 4; ++i) {
+    marker |= static_cast<std::uint32_t>(entry.bytes[8 + static_cast<std::size_t>(i)]) << (8 * i);
+    inverse |= static_cast<std::uint32_t>(entry.bytes[12 + static_cast<std::size_t>(i)]) << (8 * i);
+  }
+  if (inverse != ~marker) {
+    throw std::runtime_error("vm2: malformed opcode-map marker");
+  }
+  marker_crc32 = marker;
+  return true;
+}
+
+OpcodeCryptor opcode_cryptor_for_module(const Vm2Module& module) {
+  return OpcodeCryptor::from_seed(module.key_context_id, module.opcode_map_seed);
+}
+
+ByteVector encode_code_stream(const ByteVector& canonical_code, const OpcodeCryptor& cryptor) {
+  ByteVector encoded;
+  encoded.reserve(canonical_code.size());
+  std::size_t pc = 0;
+  while (pc < canonical_code.size()) {
+    std::size_t cursor = pc;
+    const auto opcode = static_cast<Opcode>(read_u16(canonical_code, cursor));
+    const auto size = instruction_size(opcode);
+    if (pc + size > canonical_code.size()) {
+      throw std::runtime_error("vm2: truncated canonical code");
+    }
+    append_u16(encoded, cryptor.encode(opcode));
+    encoded.insert(encoded.end(),
+                   canonical_code.begin() + static_cast<std::ptrdiff_t>(cursor),
+                   canonical_code.begin() + static_cast<std::ptrdiff_t>(pc + size));
+    pc += size;
+  }
+  return encoded;
+}
+
+ByteVector decode_code_stream(const ByteVector& encoded_code, const OpcodeCryptor& cryptor) {
+  ByteVector decoded;
+  decoded.reserve(encoded_code.size());
+  std::size_t pc = 0;
+  while (pc < encoded_code.size()) {
+    std::size_t cursor = pc;
+    const auto on_disk = read_u16(encoded_code, cursor);
+    const auto opcode = cryptor.decode(on_disk);
+    const auto size = instruction_size(opcode);
+    if (pc + size > encoded_code.size()) {
+      throw std::runtime_error("vm2: truncated encoded code");
+    }
+    append_u16(decoded, static_cast<std::uint16_t>(opcode));
+    decoded.insert(decoded.end(),
+                   encoded_code.begin() + static_cast<std::ptrdiff_t>(cursor),
+                   encoded_code.begin() + static_cast<std::ptrdiff_t>(pc + size));
+    pc += size;
+  }
+  return decoded;
+}
+
+std::uint16_t module_version_for_serialize(const Vm2Module& module) {
+  if ((module.module_flags & VMP_FLAG_OPCODE_ENCRYPTED) != 0) {
+    return kVm2Version;
+  }
+  if (module.version == kVm2LegacyVersion && seed_is_zero(module.opcode_map_seed)) {
+    return kVm2LegacyVersion;
+  }
+  return kVm2Version;
 }
 
 
@@ -271,6 +394,121 @@ std::size_t decode_instruction_size(const ByteVector& code, std::size_t pc) {
       return 5;
   }
   throw std::runtime_error("vm2: unknown opcode while collecting function entries");
+}
+
+std::size_t instruction_size(Opcode opcode) {
+  switch (opcode) {
+    case Opcode::nop:
+    case Opcode::bret:
+    case Opcode::pret:
+    case Opcode::xret:
+    case Opcode::ifence:
+    case Opcode::brk:
+      return 2;
+    case Opcode::ftrap:
+    case Opcode::jmp:
+    case Opcode::syscall_proxy:
+      return 6;
+    case Opcode::ildimm:
+    case Opcode::dldimm:
+      return 11;
+    case Opcode::vldimm:
+    case Opcode::tsload:
+      return 7;
+    case Opcode::imov:
+    case Opcode::ineg:
+    case Opcode::inot:
+    case Opcode::dmov:
+    case Opcode::ipopcnt:
+    case Opcode::iclz:
+    case Opcode::ictz:
+    case Opcode::ibswap:
+    case Opcode::isetcc:
+    case Opcode::istrlen:
+    case Opcode::dsqrt:
+    case Opcode::i64tof:
+    case Opcode::f64toi:
+    case Opcode::icmp:
+    case Opcode::itest:
+    case Opcode::dcmp:
+      return 4;
+    case Opcode::tsrelease:
+    case Opcode::tswipe:
+      return 3;
+    case Opcode::iadd:
+    case Opcode::isub:
+    case Opcode::imul:
+    case Opcode::idiv:
+    case Opcode::imod:
+    case Opcode::iand:
+    case Opcode::ior:
+    case Opcode::ixor:
+    case Opcode::ishl:
+    case Opcode::ishr:
+    case Opcode::isar:
+    case Opcode::dadd:
+    case Opcode::dsub:
+    case Opcode::dmul:
+    case Opcode::ddiv:
+    case Opcode::vadd128:
+    case Opcode::vsub128:
+    case Opcode::vmul128:
+    case Opcode::vxor128:
+    case Opcode::imemcpy:
+    case Opcode::imemset:
+    case Opcode::istrcmp:
+      return 5;
+    case Opcode::imemld8:
+    case Opcode::imemld16:
+    case Opcode::imemld32:
+    case Opcode::imemld64:
+    case Opcode::imemst8:
+    case Opcode::imemst16:
+    case Opcode::imemst32:
+    case Opcode::imemst64:
+    case Opcode::vmemld128:
+    case Opcode::vmemst128:
+      return 8;
+    case Opcode::jp:
+    case Opcode::jnp:
+      return 7;
+    case Opcode::blnk:
+      return 7;
+    case Opcode::pcall:
+      return 8;
+    case Opcode::xcall:
+      return 10;
+    case Opcode::bridgeargs:
+      return 5;
+    case Opcode::icas64:
+      return 10;
+    case Opcode::ixchg64:
+      return 9;
+    case Opcode::tsread8:
+      return 5;
+  }
+  throw std::runtime_error("vm2: unknown opcode size");
+}
+
+const std::vector<Opcode>& canonical_opcode_sequence_internal() {
+  static const std::vector<Opcode> sequence{
+      Opcode::nop,        Opcode::ildimm,      Opcode::vldimm,      Opcode::imov,         Opcode::dldimm,
+      Opcode::dmov,       Opcode::iadd,        Opcode::isub,        Opcode::imul,         Opcode::idiv,
+      Opcode::imod,       Opcode::ineg,        Opcode::iand,        Opcode::ior,          Opcode::ixor,
+      Opcode::ishl,       Opcode::ishr,        Opcode::isar,        Opcode::inot,         Opcode::ipopcnt,
+      Opcode::iclz,       Opcode::ictz,        Opcode::ibswap,      Opcode::icmp,         Opcode::itest,
+      Opcode::isetcc,     Opcode::imemld8,     Opcode::imemld16,    Opcode::imemld32,     Opcode::imemld64,
+      Opcode::imemst8,    Opcode::imemst16,    Opcode::imemst32,    Opcode::imemst64,     Opcode::vmemld128,
+      Opcode::vmemst128,  Opcode::jmp,         Opcode::jp,          Opcode::jnp,          Opcode::blnk,
+      Opcode::bret,       Opcode::pcall,       Opcode::pret,        Opcode::dadd,         Opcode::dsub,
+      Opcode::dmul,       Opcode::ddiv,        Opcode::dsqrt,       Opcode::i64tof,       Opcode::f64toi,
+      Opcode::dcmp,       Opcode::vadd128,     Opcode::vsub128,     Opcode::vmul128,      Opcode::vxor128,
+      Opcode::imemcpy,    Opcode::imemset,     Opcode::istrcmp,     Opcode::istrlen,      Opcode::icas64,
+      Opcode::ixchg64,    Opcode::ifence,      Opcode::brk,         Opcode::ftrap,        Opcode::syscall_proxy,
+      Opcode::xcall,      Opcode::xret,        Opcode::bridgeargs,  Opcode::tsload,       Opcode::tsrelease,
+      Opcode::tsread8,    Opcode::tswipe,
+  };
+  return sequence;
 }
 
 std::unordered_set<std::uint32_t> collect_function_entries(const ByteVector& code, std::uint32_t entry_pc) {
@@ -592,6 +830,105 @@ ParsedProgram parse_assembly(std::string_view text) {
 
 }  // namespace
 
+const std::vector<Opcode>& canonical_opcode_sequence() {
+  return canonical_opcode_sequence_internal();
+}
+
+OpcodeCryptor OpcodeCryptor::identity() {
+  OpcodeCryptor cryptor;
+  cryptor.canonical_words_.reserve(canonical_opcode_sequence_internal().size());
+  cryptor.encoded_words_.reserve(canonical_opcode_sequence_internal().size());
+  cryptor.decoded_words_.reserve(canonical_opcode_sequence_internal().size());
+  for (const auto opcode : canonical_opcode_sequence_internal()) {
+    const auto word = static_cast<std::uint16_t>(opcode);
+    cryptor.canonical_index_by_word_[word] = cryptor.canonical_words_.size();
+    cryptor.encoded_index_by_word_[word] = cryptor.canonical_words_.size();
+    cryptor.canonical_words_.push_back(word);
+    cryptor.encoded_words_.push_back(word);
+    cryptor.decoded_words_.push_back(word);
+  }
+  return cryptor;
+}
+
+OpcodeCryptor OpcodeCryptor::from_seed(const MasterKey& master_key, const Seed& seed) {
+  auto cryptor = OpcodeCryptor::identity();
+  std::vector<std::size_t> permutation(cryptor.canonical_words_.size());
+  std::iota(permutation.begin(), permutation.end(), 0u);
+
+  const auto prk = vmp::runtime::strings::hkdf_extract_sha256(
+      std::vector<std::uint8_t>(master_key.begin(), master_key.end()),
+      std::vector<std::uint8_t>(seed.begin(), seed.end()));
+  const auto okm = vmp::runtime::strings::hkdf_expand_sha256(prk,
+                                                             vmp::runtime::strings::to_bytes(kOpcodeMapPurposeTag),
+                                                             vmp::runtime::strings::kChaCha20KeySize);
+  vmp::runtime::strings::Nonce nonce{};
+  std::vector<std::uint8_t> zeroes(4096, 0);
+  const auto keystream = vmp::runtime::strings::chacha20_xor(okm, nonce, 0, zeroes);
+
+  std::size_t offset = 0;
+  auto next_u32 = [&]() -> std::uint32_t {
+    if (offset + 4 > keystream.size()) {
+      throw std::runtime_error("vm2: opcode keystream exhausted");
+    }
+    std::uint32_t value = 0;
+    for (int i = 0; i < 4; ++i) {
+      value |= static_cast<std::uint32_t>(keystream[offset + static_cast<std::size_t>(i)]) << (8 * i);
+    }
+    offset += 4;
+    return value;
+  };
+
+  for (std::size_t i = permutation.size(); i > 1; --i) {
+    const auto bound = static_cast<std::uint32_t>(i);
+    const auto limit = std::numeric_limits<std::uint32_t>::max() -
+                       (std::numeric_limits<std::uint32_t>::max() % bound);
+    std::uint32_t sample = 0;
+    do {
+      sample = next_u32();
+    } while (sample > limit);
+    const auto j = static_cast<std::size_t>(sample % bound);
+    std::swap(permutation[i - 1], permutation[j]);
+  }
+
+  cryptor.encoded_words_.assign(cryptor.canonical_words_.size(), 0);
+  cryptor.decoded_words_.assign(cryptor.canonical_words_.size(), 0);
+  cryptor.encoded_index_by_word_.clear();
+  for (std::size_t i = 0; i < permutation.size(); ++i) {
+    const auto encoded_word = cryptor.canonical_words_[permutation[i]];
+    cryptor.encoded_words_[i] = encoded_word;
+    cryptor.decoded_words_[permutation[i]] = cryptor.canonical_words_[i];
+    cryptor.encoded_index_by_word_[encoded_word] = permutation[i];
+  }
+  return cryptor;
+}
+
+std::uint16_t OpcodeCryptor::encode(Opcode opcode) const {
+  const auto word = static_cast<std::uint16_t>(opcode);
+  const auto it = canonical_index_by_word_.find(word);
+  if (it == canonical_index_by_word_.end()) {
+    throw std::runtime_error("invalid_opcode");
+  }
+  return encoded_words_.at(it->second);
+}
+
+Opcode OpcodeCryptor::decode(std::uint16_t on_disk) const {
+  const auto it = encoded_index_by_word_.find(on_disk);
+  if (it == encoded_index_by_word_.end()) {
+    throw std::runtime_error("invalid_opcode");
+  }
+  return static_cast<Opcode>(decoded_words_.at(it->second));
+}
+
+std::uint32_t OpcodeCryptor::sanity_marker_crc32() const {
+  ByteVector material;
+  material.reserve(4 + encoded_words_.size() * 2);
+  append_u32(material, static_cast<std::uint32_t>(encoded_words_.size()));
+  for (const auto word : encoded_words_) {
+    append_u16(material, word);
+  }
+  return vmp::runtime::integrity::crc32_compute(material.data(), material.size());
+}
+
 Vm2Exception::Vm2Exception(std::uint32_t pc, std::string message) : std::runtime_error(std::move(message)), pc_(pc) {}
 
 Vm2Context::Vm2Context(const Vm2Module& module_in, std::size_t stack_size)
@@ -727,34 +1064,72 @@ Vm2Module Vm2Module::load_from_file(const std::string& path) {
 }
 
 Vm2Module Vm2Module::load_from_bytes(const std::vector<std::uint8_t>& bytes) {
-  if (bytes.size() < kVm2HeaderSize + kVm2KeyContextIdSize) throw std::runtime_error("vm2: module too small");
+  if (bytes.size() < kVm2LegacyHeaderSize + kVm2KeyContextIdSize) throw std::runtime_error("vm2: module too small");
   Vm2Module module;
   if (!std::equal(kVm2Magic.begin(), kVm2Magic.end(), bytes.begin())) throw std::runtime_error("vm2: bad magic");
   std::size_t offset = 4;
   module.version = read_u16(bytes, offset);
+  const auto header_size = vm2_header_size_for_version(module.version);
+  if (bytes.size() < header_size + kVm2KeyContextIdSize) throw std::runtime_error("vm2: module too small");
   module.module_flags = read_u16(bytes, offset);
   module.entry_pc = read_u32(bytes, offset);
   const auto code_size = read_u32(bytes, offset);
   const auto const_pool_size = read_u32(bytes, offset);
   module.crc32 = read_u32(bytes, offset);
-  if (module.version != kVm2Version) throw std::runtime_error("vm2: unsupported version");
+  if (module.version == kVm2Version) {
+    std::copy_n(bytes.begin() + static_cast<std::ptrdiff_t>(offset),
+                kOpcodeMapSeedSize,
+                module.opcode_map_seed.begin());
+    offset += kOpcodeMapSeedSize;
+  }
   if ((const_pool_size % 16u) != 0) throw std::runtime_error("vm2: const pool must be 16-byte aligned");
   if (offset + code_size + const_pool_size + kVm2KeyContextIdSize > bytes.size()) throw std::runtime_error("vm2: truncated const pool");
-  const auto actual_crc32 = vmp::runtime::integrity::crc32_compute(bytes.data() + kVm2HeaderSize,
+  const auto actual_crc32 = vmp::runtime::integrity::crc32_compute(bytes.data() + header_size,
                                                                    code_size + const_pool_size);
   if (actual_crc32 != module.crc32) {
     append_module_crc_mismatch_audit("expected=" + hex_u32(module.crc32) + " actual=" + hex_u32(actual_crc32));
     throw std::runtime_error("vm2: crc32 mismatch");
   }
-  module.code.assign(bytes.begin() + static_cast<std::ptrdiff_t>(offset),
-                     bytes.begin() + static_cast<std::ptrdiff_t>(offset + code_size));
+  ByteVector serialized_code(bytes.begin() + static_cast<std::ptrdiff_t>(offset),
+                             bytes.begin() + static_cast<std::ptrdiff_t>(offset + code_size));
   offset += code_size;
-  module.const_pool.resize(const_pool_size / 16u);
-  for (std::size_t i = 0; i < module.const_pool.size(); ++i) {
-    std::copy_n(bytes.begin() + static_cast<std::ptrdiff_t>(offset + i * 16u), 16, module.const_pool[i].bytes.begin());
+  bool saw_opcode_marker = false;
+  const auto const_slots = const_pool_size / 16u;
+  for (std::size_t i = 0; i < const_slots; ++i) {
+    Vm2ConstPoolEntry entry{};
+    std::copy_n(bytes.begin() + static_cast<std::ptrdiff_t>(offset + i * 16u), 16, entry.bytes.begin());
+    std::uint32_t marker_crc32 = 0;
+    if ((module.module_flags & VMP_FLAG_OPCODE_ENCRYPTED) != 0) {
+      if (parse_opcode_marker_entry(entry, marker_crc32)) {
+        if (saw_opcode_marker) {
+          append_opcode_map_invalid_audit("vm2 duplicate opcode-map marker");
+          throw std::runtime_error("vm2: duplicate opcode-map marker");
+        }
+        module.opcode_map_marker_crc32 = marker_crc32;
+        saw_opcode_marker = true;
+        continue;
+      }
+    }
+    module.const_pool.push_back(entry);
   }
   offset += const_pool_size;
   std::copy_n(bytes.begin() + static_cast<std::ptrdiff_t>(offset), kVm2KeyContextIdSize, module.key_context_id.begin());
+  if ((module.module_flags & VMP_FLAG_OPCODE_ENCRYPTED) != 0) {
+    if (!saw_opcode_marker) {
+      append_opcode_map_invalid_audit("vm2 missing opcode-map marker");
+      throw std::runtime_error("vm2: missing opcode-map marker");
+    }
+    const auto cryptor = opcode_cryptor_for_module(module);
+    const auto expected_marker = cryptor.sanity_marker_crc32();
+    if (expected_marker != module.opcode_map_marker_crc32) {
+      append_opcode_map_invalid_audit("vm2 marker mismatch expected=" + hex_u32(expected_marker) +
+                                      " actual=" + hex_u32(module.opcode_map_marker_crc32));
+      throw std::runtime_error("vm2: opcode map invalid");
+    }
+    module.code = decode_code_stream(serialized_code, cryptor);
+  } else {
+    module.code = std::move(serialized_code);
+  }
   if (module.entry_pc > module.code.size()) throw std::runtime_error("vm2: entry_pc out of range");
   module.runtime_id = g_next_vm2_module_id.fetch_add(1);
   module.function_entries = collect_function_entries(module.code, module.entry_pc);
@@ -762,19 +1137,30 @@ Vm2Module Vm2Module::load_from_bytes(const std::vector<std::uint8_t>& bytes) {
 }
 
 std::vector<std::uint8_t> Vm2Module::serialize() const {
+  const bool encrypt_opcodes = (module_flags & VMP_FLAG_OPCODE_ENCRYPTED) != 0;
+  const auto write_version = module_version_for_serialize(*this);
+  const auto cryptor = encrypt_opcodes ? opcode_cryptor_for_module(*this) : OpcodeCryptor::identity();
+  const auto encoded_code = encrypt_opcodes ? encode_code_stream(code, cryptor) : code;
+  const auto marker_entry = encrypt_opcodes ? std::optional<Vm2ConstPoolEntry>(make_opcode_marker_entry(cryptor.sanity_marker_crc32()))
+                                            : std::nullopt;
   std::vector<std::uint8_t> body;
-  body.reserve(code.size() + const_pool.size() * 16u);
-  body.insert(body.end(), code.begin(), code.end());
+  body.reserve(encoded_code.size() + (const_pool.size() + (marker_entry.has_value() ? 1u : 0u)) * 16u);
+  body.insert(body.end(), encoded_code.begin(), encoded_code.end());
   for (const auto& entry : const_pool) body.insert(body.end(), entry.bytes.begin(), entry.bytes.end());
+  if (marker_entry.has_value()) body.insert(body.end(), marker_entry->bytes.begin(), marker_entry->bytes.end());
   std::vector<std::uint8_t> out;
-  out.reserve(kVm2HeaderSize + body.size() + key_context_id.size());
+  const auto header_size = write_version == kVm2Version ? kVm2HeaderSize : kVm2LegacyHeaderSize;
+  out.reserve(header_size + body.size() + key_context_id.size());
   out.insert(out.end(), kVm2Magic.begin(), kVm2Magic.end());
-  append_u16(out, kVm2Version);
+  append_u16(out, write_version);
   append_u16(out, module_flags);
   append_u32(out, entry_pc);
-  append_u32(out, static_cast<std::uint32_t>(code.size()));
-  append_u32(out, static_cast<std::uint32_t>(const_pool.size() * 16u));
+  append_u32(out, static_cast<std::uint32_t>(encoded_code.size()));
+  append_u32(out, static_cast<std::uint32_t>((const_pool.size() + (marker_entry.has_value() ? 1u : 0u)) * 16u));
   append_u32(out, vmp::runtime::integrity::crc32_compute(body.data(), body.size()));
+  if (write_version == kVm2Version) {
+    out.insert(out.end(), opcode_map_seed.begin(), opcode_map_seed.end());
+  }
   out.insert(out.end(), body.begin(), body.end());
   out.insert(out.end(), key_context_id.begin(), key_context_id.end());
   return out;
@@ -789,9 +1175,23 @@ void Vm2Module::save_to_file(const std::string& path) const {
 }
 
 Vm2Module assemble_module_text(std::string_view text, std::uint16_t module_flags) {
+  AssembleOptions options;
+  options.module_flags = static_cast<std::uint16_t>(module_flags & ~VMP_FLAG_OPCODE_ENCRYPTED);
+  options.encrypt_opcodes = false;
+  auto module = assemble_module_text(text, options);
+  module.version = kVm2LegacyVersion;
+  return module;
+}
+
+Vm2Module assemble_module_text(std::string_view text, const AssembleOptions& options) {
   const auto program = parse_assembly(text);
   Vm2Module module;
-  module.module_flags = module_flags;
+  module.version = options.encrypt_opcodes ? kVm2Version : kVm2LegacyVersion;
+  module.module_flags = static_cast<std::uint16_t>(options.module_flags & ~VMP_FLAG_OPCODE_ENCRYPTED);
+  if (options.encrypt_opcodes) {
+    module.module_flags = static_cast<std::uint16_t>(module.module_flags | VMP_FLAG_OPCODE_ENCRYPTED);
+    module.opcode_map_seed = options.opcode_seed.value_or(random_opcode_seed());
+  }
   module.const_pool = program.const_pool;
   module.key_context_id = program.key_context_id;
   for (const auto& inst : program.instructions) {
@@ -997,6 +1397,9 @@ Vm2Module assemble_module_text(std::string_view text, std::uint16_t module_flags
   }
   module.runtime_id = g_next_vm2_module_id.fetch_add(1);
   module.function_entries = collect_function_entries(module.code, module.entry_pc);
+  if ((module.module_flags & VMP_FLAG_OPCODE_ENCRYPTED) != 0) {
+    module.opcode_map_marker_crc32 = opcode_cryptor_for_module(module).sanity_marker_crc32();
+  }
   return module;
 }
 

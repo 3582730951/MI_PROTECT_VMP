@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -23,12 +24,39 @@ struct Vm2ConstPoolEntry {
   std::array<std::uint8_t, 16> bytes{};
 };
 
+class OpcodeCryptor {
+ public:
+  using MasterKey = std::array<std::uint8_t, kVm2KeyContextIdSize>;
+  using Seed = std::array<std::uint8_t, kOpcodeMapSeedSize>;
+
+  static OpcodeCryptor identity();
+  static OpcodeCryptor from_seed(const MasterKey& master_key, const Seed& seed);
+
+  std::uint16_t encode(Opcode opcode) const;
+  Opcode decode(std::uint16_t on_disk) const;
+  std::uint32_t sanity_marker_crc32() const;
+
+  const std::vector<std::uint16_t>& encoded_words() const noexcept { return encoded_words_; }
+  const std::vector<std::uint16_t>& decoded_words() const noexcept { return decoded_words_; }
+
+ private:
+  OpcodeCryptor() = default;
+
+  std::vector<std::uint16_t> canonical_words_;
+  std::vector<std::uint16_t> encoded_words_;
+  std::vector<std::uint16_t> decoded_words_;
+  std::unordered_map<std::uint16_t, std::size_t> canonical_index_by_word_;
+  std::unordered_map<std::uint16_t, std::size_t> encoded_index_by_word_;
+};
+
 class Vm2Module {
  public:
   std::uint16_t version = kVm2Version;
   std::uint16_t module_flags = 0;
   std::uint32_t entry_pc = 0;
   std::uint32_t crc32 = 0;
+  std::array<std::uint8_t, kOpcodeMapSeedSize> opcode_map_seed{};
+  std::uint32_t opcode_map_marker_crc32 = 0;
   std::vector<std::uint8_t> code;
   std::vector<Vm2ConstPoolEntry> const_pool;
   std::array<std::uint8_t, kVm2KeyContextIdSize> key_context_id{};
@@ -160,9 +188,17 @@ class Vm2Interpreter {
   ExecutionResult execute(Vm2Context& context);
 };
 
+struct AssembleOptions {
+  std::uint16_t module_flags = 0;
+  bool encrypt_opcodes = false;
+  std::optional<std::array<std::uint8_t, kOpcodeMapSeedSize>> opcode_seed;
+};
+
 Vm2Module assemble_module_text(std::string_view text, std::uint16_t module_flags = 0);
+Vm2Module assemble_module_text(std::string_view text, const AssembleOptions& options);
 std::string disassemble_module(const Vm2Module& module);
 std::string opcode_name(Opcode opcode);
+const std::vector<Opcode>& canonical_opcode_sequence();
 const void* handler_table_identity() noexcept;
 
 struct Facade {

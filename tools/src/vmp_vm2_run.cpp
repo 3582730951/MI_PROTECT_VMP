@@ -85,6 +85,9 @@ int main(int argc, char** argv) {
     if (options.jit != "auto") {
       set_env_var("VMP_JIT_BACKEND", options.jit);
     }
+    if (!options.audit_path.empty()) {
+      set_env_var("VMP_AUDIT_PATH", options.audit_path);
+    }
     vmp::runtime::jit::Vm2Jit::instance().reset_for_tests();
     if (const char* verbose = std::getenv("VMP_JIT_VERBOSE"); verbose != nullptr && std::string(verbose) == "1") {
       std::cout << "jit backend=" << vmp::runtime::jit::Vm2Jit::instance().selected_backend_name() << '\n';

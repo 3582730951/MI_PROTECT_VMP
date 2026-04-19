@@ -1305,3 +1305,69 @@
   - 当前范围内无额外未完成项；CRC32 硬件加速与更多完整性算法仍保持 out-of-scope。
 - 下一子任务建议：
   - 若后续进入 VM dispatch / codegen / trampoline 路径，可在当前已稳定的 CRC32 + SHA-256 机制上继续为 VM 容器与入口跳板增加更细粒度的生命周期审计，而不需要再改动完整性框架的默认语义。
+
+### subtask_23
+- 本轮清单：
+  - 在 `runtime/vm1` 与 `runtime/vm2` 新增 `OpcodeCryptor`，按模块 seed 生成确定性 opcode 置换表 `P` 与逆表 `Q`；assembler 将 canonical opcode 写成 on-disk opcode，loader 在 CRC 校验通过后恢复 `Q` 并回到 canonical dispatch。
+  - VM1 / VM2 模块头扩展 `opcode_map_seed[16]` 与 `VMP_FLAG_OPCODE_ENCRYPTED=0x01`，版本号提升到 `4`；旧版 `v3` 仍可读取，未加密模块保持 identity 映射。
+  - 派生流程按规范落地：`HKDF-SHA256(info="opcode_map_v1")` + `ChaCha20` 4 KiB keystream + Fisher-Yates；VM1 以零 `master_key`/salt 生成模块级映射，VM2 以 `key_context_id` 作为 salt 生成模块级映射。
+  - 新增 opcode-map sanity marker：assembler 将 `CRC32(P(test-sequence))` 作为隐藏 const-pool 项写入模块，loader 在解码前重算并验证；seed 被篡改或 marker 不匹配时记录 `opcode_map_invalid` 审计并拒绝运行。
+  - 序列化/反序列化保持 CRC32 语义不变：`crc32` 继续覆盖原始 on-disk payload，因此加密 opcode、marker const-pool 项与其他 body 字节均受已有 CRC32 保护。
+  - `vmp-vm1-asm` / `vmp-vm2-asm` 新增 `--encrypt-opcodes`、`--no-encrypt-opcodes`、`--opcode-seed <32 hex>`；CLI 默认开启加密，并支持 `VMP_OPCODE_MAP_SEED` 复现构建。
+  - `vmp-vm1-run` / `vmp-vm2-run` 在传入 `--audit-path` 时同步设置 `VMP_AUDIT_PATH`，确保 load-time `opcode_map_invalid` 事件能落盘到调用方指定路径。
+  - `vmp-integrity-probe --dump-opcode-map <module>` 新增调试输出，可打印 `P[]` / `Q[]`、seed、flags（VM2 额外输出 `key_context_id`）。
+  - `runtime/vm1/README.md` 与 `runtime/vm2/README.md` 新增 “Opcode encryption” 章节，明确本功能仅在 CTF crackme scope 内依据 Override #2 授权启用。
+- 保守解释（阻塞歧义已在本轮固定并实现）：
+  - 为避免破坏既有直接库调用与历史测试，原有 `assemble_module_text(text, stack_size)` 默认保持 legacy identity / `v3` 输出；只有 CLI assembler 默认开启 opcode 加密并输出 `v4` 头。这样既满足比赛要求的默认打包路径，又不无故改变现有非 CLI 测试夹具语义。
+  - `cryptor_different_seed_different_bytes` 中“fib20 module code section 至少 95% 不同”按 opcode-word 位置计算，而不是把立即数/地址操作数字节一并纳入分母；本子任务只随机化 opcode 映射，不修改 operand 编码，因此该口径与需求对象一致。
+- 覆盖表：
+
+  | 需求 | 实现位置 | 验证 |
+  | --- | --- | --- |
+  | VM1/VM2 `OpcodeCryptor::from_seed()` / `encode()` / `decode()` / `Q=P^-1` | `runtime/vm1/src/vm1.cpp`, `runtime/vm2/src/vm2.cpp` | `cryptor_permutation_is_bijection`, `cryptor_same_seed_deterministic` |
+  | 模块头新增 seed + encrypted flag，CRC 继续覆盖 raw payload | `runtime/vm1/include/vmp/runtime/vm1/{isa.h,vm1.h}`, `runtime/vm2/include/vmp/runtime/vm2/{isa.h,vm2.h}` | `integration_with_crc32` |
+  | assembler 默认加密，支持 `--no-encrypt-opcodes` / `--opcode-seed` / `VMP_OPCODE_MAP_SEED` | `tools/src/vmp_vm1_asm.cpp`, `tools/src/vmp_vm2_asm.cpp` | `cryptor_env_seed_reproducible`, `cryptor_flag_off_identity`, `cryptor_vm2_equivalent` |
+  | loader 自动检测 flag，sanity marker 失配写审计并拒绝执行 | `runtime/vm1/src/vm1.cpp`, `runtime/vm2/src/vm2.cpp`, `tools/src/vmp_vm{1,2}_run.cpp` | `cryptor_tampered_seed_detected` |
+  | 语义等价：不同 seed 下 fib20 结果保持 6765 | runtime + tools | `cryptor_semantic_equivalence_fib20`, `cryptor_vm2_equivalent` |
+  | probe 可导出 `P[]` / `Q[]` | `tools/src/vmp_integrity_probe.cpp` | `integration_with_crc32` |
+- 本轮变更文件（相对路径）：
+  - `runtime/vm1/README.md`
+  - `runtime/vm1/include/vmp/runtime/vm1/isa.h`
+  - `runtime/vm1/include/vmp/runtime/vm1/vm1.h`
+  - `runtime/vm1/src/vm1.cpp`
+  - `runtime/vm2/README.md`
+  - `runtime/vm2/include/vmp/runtime/vm2/isa.h`
+  - `runtime/vm2/include/vmp/runtime/vm2/vm2.h`
+  - `runtime/vm2/src/vm2.cpp`
+  - `tests/CMakeLists.txt`
+  - `tests/runtime_opcode_cryptor/test_common.h`
+  - `tests/runtime_opcode_cryptor/cryptor_permutation_is_bijection.cpp`
+  - `tests/runtime_opcode_cryptor/cryptor_same_seed_deterministic.cpp`
+  - `tests/runtime_opcode_cryptor/cryptor_different_seed_different_bytes.cpp`
+  - `tests/runtime_opcode_cryptor/common.py`
+  - `tests/runtime_opcode_cryptor/cryptor_semantic_equivalence_fib20.py`
+  - `tests/runtime_opcode_cryptor/cryptor_env_seed_reproducible.py`
+  - `tests/runtime_opcode_cryptor/cryptor_tampered_seed_detected.py`
+  - `tests/runtime_opcode_cryptor/cryptor_flag_off_identity.py`
+  - `tests/runtime_opcode_cryptor/cryptor_vm2_equivalent.py`
+  - `tests/runtime_opcode_cryptor/integration_with_crc32.py`
+  - `tools/src/vmp_integrity_probe.cpp`
+  - `tools/src/vmp_vm1_asm.cpp`
+  - `tools/src/vmp_vm1_run.cpp`
+  - `tools/src/vmp_vm2_asm.cpp`
+  - `tools/src/vmp_vm2_run.cpp`
+- 验证结果：
+  - workspace（`/workspace/vmp`）：
+    - `cmake -S . -B build -G Ninja` ✅
+    - `cmake --build build -j` ✅
+    - `ctest --test-dir build --output-on-failure` ✅（`100% tests passed, 0 tests failed out of 163`；expected skipped: `rewriter_pe_roundtrip`、`final_matrix_17_5_platform_matrix`）
+    - `cargo test --workspace` ✅（Rust test count `22`，全部通过）
+  - clean copy（`/tmp/vmp_port23`）：
+    - `cmake -S . -B build -G Ninja` ✅
+    - `cmake --build build -j` ✅
+    - `ctest --test-dir build --output-on-failure` ✅（`100% tests passed, 0 tests failed out of 163`；expected skipped 同上）
+    - `cargo test --workspace` ✅（Rust test count `22`，全部通过）
+- 未完成项：
+  - 本轮范围内无额外未完成项；handler-table randomization、whitebox AES、VM-detection probes 继续保持 out-of-scope。
+- 下一子任务建议：
+  - 若继续进入 subtask 24/25/26，可直接复用本轮已稳定的 per-module opcode map 元数据与 hidden marker 机制，向 reverse-dispatch / trampoline 路径扩展，而无需再改当前 CRC32 或 audit 基础设施。

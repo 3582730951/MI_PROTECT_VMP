@@ -23,12 +23,13 @@
 固定头：
 
 - `magic[4] = "VM1B"`
-- `version: u16`（当前为 `1`）
+- `version: u16`（legacy identity 模块为 `3`；启用 opcode encryption 的当前格式为 `4`）
 - `flags: u16`
 - `entry_pc: u32`
-- `code_size: u32`
-- `code_bytes[code_size]`
 - `const_count: u32`
+- `crc32: u32`（覆盖原始 on-disk body）
+- `opcode_map_seed[16]`（仅 `version=4`）
+- `code_bytes[code_size]`
 - `const_pool[const_count]`
   - `kind: u8`
   - `payload_size: u32`
@@ -138,6 +139,13 @@ base:
 
 - 汇编：`build/tools/vmp-vm1-asm input.vm1s output.vm1`
 - 运行：`build/tools/vmp-vm1-run [--audit-path audit.log] [--string-pool pool.bin --string-idx pool.idx.json --key-env VMP_STRING_MASTER_KEY] [--native-print-string <id>] module.vm1 [args...]`
+
+## Opcode encryption（subtask 23 / Owner Override #2）
+
+- 该功能仅用于比赛要求的 CTF crackme 防护路径；授权来源为 `AGENTS.md` 中 2026-04-19 的 Owner Override #2，作用域仅限 VM dispatch / codegen / trampoline 路径。
+- `vmp-vm1-asm` 默认开启 opcode encryption；`--no-encrypt-opcodes` 输出 identity 映射；`--opcode-seed <32 hex>` 或环境变量 `VMP_OPCODE_MAP_SEED` 可复现实验结果。
+- `VMP_FLAG_OPCODE_ENCRYPTED = 0x0001` 置位时，assembler 会把 canonical opcode 通过 `OpcodeCryptor` 映射成按模块随机化的 on-disk opcode word；解释器在 load 时校验隐藏 const-pool marker 后再解码回 canonical 内存代码。
+- 载入时若 `opcode_map_seed` 推导出的 marker 与模块携带值不匹配，会审计 `opcode_map_invalid` 并拒绝运行。
 
 ## JIT 集成（subtask 10）
 

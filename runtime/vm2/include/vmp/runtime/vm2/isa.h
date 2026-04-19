@@ -7,13 +7,16 @@
 namespace vmp::runtime::vm2 {
 
 inline constexpr std::array<std::uint8_t, 4> kVm2Magic{{'V', 'M', 'P', '2'}};
-inline constexpr std::uint16_t kVm2Version = 3;
+inline constexpr std::uint16_t kVm2LegacyVersion = 3;
+inline constexpr std::uint16_t kVm2Version = 4;
 inline constexpr std::size_t kVm2GeneralRegisterCount = 32;
 inline constexpr std::size_t kVm2VectorRegisterCount = 16;
 inline constexpr std::size_t kVm2FloatRegisterCount = 8;
 inline constexpr std::size_t kVm2PredicateCount = 8;
 inline constexpr std::size_t kVm2DefaultStackSize = 128u * 1024u;
 inline constexpr std::size_t kVm2KeyContextIdSize = 16u;
+inline constexpr std::size_t kOpcodeMapSeedSize = 16u;
+inline constexpr std::uint16_t VMP_FLAG_OPCODE_ENCRYPTED = 0x0001u;
 
 union Vec128 {
   struct {

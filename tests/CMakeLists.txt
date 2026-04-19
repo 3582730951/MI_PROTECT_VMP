@@ -405,6 +405,69 @@ set_tests_properties(vmp_vm2_run_fib20 PROPERTIES
   DEPENDS vmp_vm2_asm_fib20
   PASS_REGULAR_EXPRESSION "ret_int=6765")
 
+function(vmp_add_runtime_opcode_cryptor_test target source)
+  add_executable(${target} ${source})
+  target_link_libraries(${target} PRIVATE vmp_runtime_vm1 vmp_runtime_vm2 vmp_runtime_strings vmp_runtime_integrity vmp_runtime_audit)
+  set_target_properties(${target} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
+  add_test(NAME ${target} COMMAND $<TARGET_FILE:${target}>)
+  set_tests_properties(${target} PROPERTIES PASS_REGULAR_EXPRESSION "${target} OK")
+endfunction()
+
+vmp_add_runtime_opcode_cryptor_test(cryptor_permutation_is_bijection
+  ${CMAKE_CURRENT_SOURCE_DIR}/runtime_opcode_cryptor/cryptor_permutation_is_bijection.cpp)
+vmp_add_runtime_opcode_cryptor_test(cryptor_same_seed_deterministic
+  ${CMAKE_CURRENT_SOURCE_DIR}/runtime_opcode_cryptor/cryptor_same_seed_deterministic.cpp)
+vmp_add_runtime_opcode_cryptor_test(cryptor_different_seed_different_bytes
+  ${CMAKE_CURRENT_SOURCE_DIR}/runtime_opcode_cryptor/cryptor_different_seed_different_bytes.cpp)
+
+add_test(NAME cryptor_semantic_equivalence_fib20
+  COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/runtime_opcode_cryptor/cryptor_semantic_equivalence_fib20.py
+    $<TARGET_FILE:vmp-vm1-asm>
+    $<TARGET_FILE:vmp-vm1-run>
+    ${CMAKE_CURRENT_SOURCE_DIR}/runtime_vm1/fixtures/fib20.vm1s)
+set_tests_properties(cryptor_semantic_equivalence_fib20 PROPERTIES PASS_REGULAR_EXPRESSION "cryptor_semantic_equivalence_fib20 OK")
+
+add_test(NAME cryptor_env_seed_reproducible
+  COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/runtime_opcode_cryptor/cryptor_env_seed_reproducible.py
+    $<TARGET_FILE:vmp-vm1-asm>
+    ${CMAKE_CURRENT_SOURCE_DIR}/runtime_vm1/fixtures/fib20.vm1s)
+set_tests_properties(cryptor_env_seed_reproducible PROPERTIES PASS_REGULAR_EXPRESSION "cryptor_env_seed_reproducible OK")
+
+add_test(NAME cryptor_tampered_seed_detected
+  COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/runtime_opcode_cryptor/cryptor_tampered_seed_detected.py
+    $<TARGET_FILE:vmp-vm1-asm>
+    $<TARGET_FILE:vmp-vm1-run>
+    ${CMAKE_CURRENT_SOURCE_DIR}/runtime_vm1/fixtures/fib20.vm1s)
+set_tests_properties(cryptor_tampered_seed_detected PROPERTIES PASS_REGULAR_EXPRESSION "cryptor_tampered_seed_detected OK")
+
+add_test(NAME cryptor_flag_off_identity
+  COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/runtime_opcode_cryptor/cryptor_flag_off_identity.py
+    $<TARGET_FILE:vmp-vm1-asm>
+    ${CMAKE_CURRENT_SOURCE_DIR}/runtime_vm1/fixtures/fib20.vm1s)
+set_tests_properties(cryptor_flag_off_identity PROPERTIES PASS_REGULAR_EXPRESSION "cryptor_flag_off_identity OK")
+
+add_test(NAME cryptor_vm2_equivalent
+  COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/runtime_opcode_cryptor/cryptor_vm2_equivalent.py
+    $<TARGET_FILE:vmp-vm2-asm>
+    $<TARGET_FILE:vmp-vm2-run>
+    ${CMAKE_CURRENT_SOURCE_DIR}/runtime_vm2/fixtures/fib20.vm2s)
+set_tests_properties(cryptor_vm2_equivalent PROPERTIES PASS_REGULAR_EXPRESSION "cryptor_vm2_equivalent OK")
+
+add_test(NAME integration_with_crc32
+  COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/runtime_opcode_cryptor/integration_with_crc32.py
+    $<TARGET_FILE:vmp-vm1-asm>
+    $<TARGET_FILE:vmp-vm2-asm>
+    $<TARGET_FILE:vmp-integrity-probe>
+    ${CMAKE_CURRENT_SOURCE_DIR}/runtime_vm1/fixtures/fib20.vm1s
+    ${CMAKE_CURRENT_SOURCE_DIR}/runtime_vm2/fixtures/fib20.vm2s)
+set_tests_properties(integration_with_crc32 PROPERTIES PASS_REGULAR_EXPRESSION "integration_with_crc32 OK")
+
 
 # loader tests
 if(UNIX AND NOT APPLE)

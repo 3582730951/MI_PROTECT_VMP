@@ -7,11 +7,14 @@
 namespace vmp::runtime::vm1 {
 
 inline constexpr std::array<std::uint8_t, 4> kVm1Magic{{'V', 'M', '1', 'B'}};
-inline constexpr std::uint16_t kVm1Version = 3;
+inline constexpr std::uint16_t kVm1LegacyVersion = 3;
+inline constexpr std::uint16_t kVm1Version = 4;
 inline constexpr std::size_t kVm1GeneralRegisterCount = 32;
 inline constexpr std::size_t kVm1FloatRegisterCount = 4;
 inline constexpr std::size_t kVm1VectorRegisterCount = 16;
 inline constexpr std::size_t kVm1DefaultStackSize = 64u * 1024u;
+inline constexpr std::size_t kOpcodeMapSeedSize = 16u;
+inline constexpr std::uint16_t VMP_FLAG_OPCODE_ENCRYPTED = 0x0001u;
 
 enum class Opcode : std::uint16_t {
   nop = 0x0000,
@@ -107,6 +110,7 @@ enum class Opcode : std::uint16_t {
 enum class ConstKind : std::uint8_t {
   none = 0,
   transient_string = 1,
+  opcode_map_marker = 0xFE,
 };
 
 enum class MemoryBase : std::uint8_t {

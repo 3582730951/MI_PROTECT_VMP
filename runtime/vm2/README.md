@@ -4,7 +4,7 @@
 - 当前状态：VM2 独立 ISA、解释器、跨域桥接、字符串句柄、函数级 JIT、CLI 工具已接线
 
 ## ISA 摘要
-- 容器头：`VMP2` magic、version、flags、entry_pc、code_size、const_pool_size、`key_context_id[16]`
+- 容器头：`VMP2` magic、version、flags、entry_pc、code_size、const_pool_size、crc32、`opcode_map_seed[16]`（`version=4`）、`key_context_id[16]`
 - 寄存器：
   - `r0..r31`：64-bit 整数寄存器
   - `q0..q15`：128-bit 向量寄存器（两条 `u64` lane）
@@ -49,3 +49,10 @@
 - 汇编：`runtime/vm2/asm/`
 - 组装：`build/tools/vmp-vm2-asm input.vm2s output.vm2`
 - 运行：`build/tools/vmp-vm2-run [--jit=off|c|x64] [--audit-path path] [--string-pool ... --string-idx ... --key-env ENV] module.vm2 [args...]`
+
+## Opcode encryption（subtask 23 / Owner Override #2）
+
+- 该功能仅用于比赛要求的 CTF crackme 防护路径；授权来源为 `AGENTS.md` 中 2026-04-19 的 Owner Override #2，作用域仅限 VM dispatch / codegen / trampoline 路径。
+- `vmp-vm2-asm` 默认开启 opcode encryption；`--no-encrypt-opcodes` 输出 identity 映射；`--opcode-seed <32 hex>` 或环境变量 `VMP_OPCODE_MAP_SEED` 可复现实验结果。
+- `VMP_FLAG_OPCODE_ENCRYPTED = 0x0001` 置位时，assembler 会把 canonical opcode 通过 `OpcodeCryptor` 映射成按模块随机化的 on-disk opcode word；loader 在校验隐藏 const-pool marker 后恢复 canonical 内存代码，再交给解释器/JIT 使用。
+- `key_context_id` 继续作为模块级 HKDF salt；若 `opcode_map_seed` 推导出的 marker 不匹配，会审计 `opcode_map_invalid` 并拒绝运行。
