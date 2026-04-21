@@ -280,6 +280,8 @@ add_subdirectory(${CMAKE_SOURCE_DIR}/tests/runtime_polymorphic_handlers
   ${CMAKE_BINARY_DIR}/tests/runtime_polymorphic_handlers)
 add_subdirectory(${CMAKE_SOURCE_DIR}/tests/runtime_obfuscation
   ${CMAKE_BINARY_DIR}/tests/runtime_obfuscation)
+add_subdirectory(${CMAKE_SOURCE_DIR}/tests/runtime_bogus_flow
+  ${CMAKE_BINARY_DIR}/tests/runtime_bogus_flow)
 add_test(NAME vmp_profile_tool_merge_diff_validate
   COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/runtime_state/vmp_profile_tool_merge_diff_validate.py
           $<TARGET_FILE:vmp-profile-tool>)

@@ -13,6 +13,7 @@
 
 #include <vmp/runtime/cryptor/rolling_opcode_vm2.h>
 #include <vmp/runtime/env_integrity/monitor.h>
+#include <vmp/runtime/obfuscation/bogus_flow.h>
 #include <vmp/runtime/obfuscation/mba.h>
 #include <vmp/runtime/obfuscation/opaque.h>
 #include <vmp/runtime/stack_probe/probe.h>
@@ -347,11 +348,14 @@ VMP_NOINLINE void emit_vm2_polymorphic_junk() {
           vmp::runtime::obfuscation::mba_sub_u64(salt_b, static_cast<std::uint64_t>(junk_length)));
   sink ^= (opaque_probe & 0ull);
   sink += ((opaque_probe >> 63u) & 0ull);
-  if (!opaque_true) {
-    sink = vmp::runtime::obfuscation::mba_add_u64(sink, salt_a);
-    sink ^= vmp::runtime::obfuscation::mba_mul2_u64(salt_b);
-    sink = vmp::runtime::obfuscation::mba_sub_u64(sink, static_cast<std::uint64_t>(junk_length));
-  }
+  VMP_APPLY_HANDLER_BOGUS_FLOW(
+      Variant,
+      sink,
+      opaque_true,
+      static_cast<std::uint64_t>(opaque_seed),
+      salt_a,
+      salt_b,
+      (static_cast<std::uint64_t>(opcode_word) << 16u) ^ static_cast<std::uint64_t>(junk_length));
 #endif
 #if defined(__GNUC__) || defined(__clang__)
   asm volatile("" : : "r"(sink) : "memory");

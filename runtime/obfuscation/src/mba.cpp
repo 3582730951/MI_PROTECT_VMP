@@ -12,6 +12,7 @@
 #include <utility>
 #include <vector>
 
+#include <vmp/runtime/obfuscation/bogus_flow.h>
 #include <vmp/runtime/obfuscation/opaque.h>
 
 namespace vmp::runtime::obfuscation {
@@ -337,8 +338,9 @@ std::vector<std::string> rewrite_vm1_body(const std::string& body,
                                           unsigned depth,
                                           bool inject_opaque_predicates,
                                           std::size_t& opaque_index,
-                                          std::uint64_t& salt_counter) {
-  std::vector<std::string> out;
+                                          std::uint64_t& salt_counter,
+                                          std::size_t& bogus_candidate_index,
+                                          std::size_t bogus_selection_phase) {
   const auto space = body.find_first_of(" \t");
   const auto op = space == std::string::npos ? body : trim(std::string_view(body).substr(0, space));
   const auto operands = space == std::string::npos ? std::vector<std::string>{}
@@ -347,32 +349,48 @@ std::vector<std::string> rewrite_vm1_body(const std::string& body,
   const auto t0 = vm1_reg(temps.work0);
   const auto t1 = vm1_reg(temps.work1);
 
-  auto maybe_guard = [&](const std::string& seed_reg) {
-    if (inject_opaque_predicates) {
-      emit_vm1_opaque_guard(out, seed_reg, temps, opaque_index++);
+  auto finalize = [&](const std::vector<std::string>& real_body,
+                      const std::string& seed_reg,
+                      bool candidate) -> std::vector<std::string> {
+    if (!inject_opaque_predicates) {
+      return real_body;
     }
+    if (candidate) {
+      const auto site_index = bogus_candidate_index++;
+      if (bogus_flow_should_inject(site_index, bogus_selection_phase)) {
+        return inject_vm1_bogus_flow(op,
+                                     operands,
+                                     real_body,
+                                     BogusFlowSiteConfig{seed_reg, one, t0, t1, site_index});
+      }
+    }
+    std::vector<std::string> out;
+    emit_vm1_opaque_guard(out, seed_reg, temps, opaque_index++);
+    out.insert(out.end(), real_body.begin(), real_body.end());
+    return out;
   };
 
   if ((op == "ldi_u64" || op == "ldi64") && operands.size() == 2u) {
-    maybe_guard(operands[0]);
+    std::vector<std::string> real_body;
     const auto imm = parse_u64_text(operands[1]);
     const auto parts = split_constant_add(imm, ++salt_counter);
-    out.push_back("ldi_u64 " + operands[0] + ", " + hex_u64(parts.first));
-    out.push_back("ldi_u64 " + t0 + ", " + hex_u64(parts.second));
-    emit_vm1_add_recursive(out, operands[0], operands[0], t0, t1, t0, one, std::max(2u, depth));
-    return out;
+    real_body.push_back("ldi_u64 " + operands[0] + ", " + hex_u64(parts.first));
+    real_body.push_back("ldi_u64 " + t0 + ", " + hex_u64(parts.second));
+    emit_vm1_add_recursive(real_body, operands[0], operands[0], t0, t1, t0, one, std::max(2u, depth));
+    return finalize(real_body, operands[0], true);
   }
 
   if ((op == "add" || op == "sub") && operands.size() == 3u) {
-    maybe_guard(operands[1]);
+    std::vector<std::string> real_body;
     if (op == "add") {
-      emit_vm1_add_recursive(out, operands[0], operands[1], operands[2], t0, t1, one, std::max(2u, depth));
+      emit_vm1_add_recursive(real_body, operands[0], operands[1], operands[2], t0, t1, one, std::max(2u, depth));
     } else {
-      emit_vm1_sub_recursive(out, operands[0], operands[1], operands[2], t0, t1, one, std::max(2u, depth));
+      emit_vm1_sub_recursive(real_body, operands[0], operands[1], operands[2], t0, t1, one, std::max(2u, depth));
     }
-    return out;
+    return finalize(real_body, operands[1], true);
   }
 
+  std::vector<std::string> out;
   out.push_back(body);
   return out;
 }
@@ -382,8 +400,9 @@ std::vector<std::string> rewrite_vm2_body(const std::string& body,
                                           unsigned depth,
                                           bool inject_opaque_predicates,
                                           std::size_t& opaque_index,
-                                          std::uint64_t& salt_counter) {
-  std::vector<std::string> out;
+                                          std::uint64_t& salt_counter,
+                                          std::size_t& bogus_candidate_index,
+                                          std::size_t bogus_selection_phase) {
   const auto space = body.find_first_of(" \t");
   const auto op = space == std::string::npos ? body : trim(std::string_view(body).substr(0, space));
   const auto operands = space == std::string::npos ? std::vector<std::string>{}
@@ -392,32 +411,48 @@ std::vector<std::string> rewrite_vm2_body(const std::string& body,
   const auto t0 = vm2_reg(temps.work0);
   const auto t1 = vm2_reg(temps.work1);
 
-  auto maybe_guard = [&](const std::string& seed_reg) {
-    if (inject_opaque_predicates) {
-      emit_vm2_opaque_guard(out, seed_reg, temps, opaque_index++);
+  auto finalize = [&](const std::vector<std::string>& real_body,
+                      const std::string& seed_reg,
+                      bool candidate) -> std::vector<std::string> {
+    if (!inject_opaque_predicates) {
+      return real_body;
     }
+    if (candidate) {
+      const auto site_index = bogus_candidate_index++;
+      if (bogus_flow_should_inject(site_index, bogus_selection_phase)) {
+        return inject_vm2_bogus_flow(op,
+                                     operands,
+                                     real_body,
+                                     BogusFlowSiteConfig{seed_reg, one, t0, t1, site_index});
+      }
+    }
+    std::vector<std::string> out;
+    emit_vm2_opaque_guard(out, seed_reg, temps, opaque_index++);
+    out.insert(out.end(), real_body.begin(), real_body.end());
+    return out;
   };
 
   if (op == "ildimm" && operands.size() == 2u) {
-    maybe_guard(operands[0]);
+    std::vector<std::string> real_body;
     const auto imm = parse_u64_text(operands[1]);
     const auto parts = split_constant_add(imm, ++salt_counter);
-    out.push_back("ildimm " + operands[0] + ", " + hex_u64(parts.first));
-    out.push_back("ildimm " + t0 + ", " + hex_u64(parts.second));
-    emit_vm2_add_recursive(out, operands[0], operands[0], t0, t1, t0, one, std::max(2u, depth));
-    return out;
+    real_body.push_back("ildimm " + operands[0] + ", " + hex_u64(parts.first));
+    real_body.push_back("ildimm " + t0 + ", " + hex_u64(parts.second));
+    emit_vm2_add_recursive(real_body, operands[0], operands[0], t0, t1, t0, one, std::max(2u, depth));
+    return finalize(real_body, operands[0], true);
   }
 
   if ((op == "iadd" || op == "isub") && operands.size() == 3u) {
-    maybe_guard(operands[1]);
+    std::vector<std::string> real_body;
     if (op == "iadd") {
-      emit_vm2_add_recursive(out, operands[0], operands[1], operands[2], t0, t1, one, std::max(2u, depth));
+      emit_vm2_add_recursive(real_body, operands[0], operands[1], operands[2], t0, t1, one, std::max(2u, depth));
     } else {
-      emit_vm2_sub_recursive(out, operands[0], operands[1], operands[2], t0, t1, one, std::max(2u, depth));
+      emit_vm2_sub_recursive(real_body, operands[0], operands[1], operands[2], t0, t1, one, std::max(2u, depth));
     }
-    return out;
+    return finalize(real_body, operands[1], true);
   }
 
+  std::vector<std::string> out;
   out.push_back(body);
   return out;
 }
@@ -435,6 +470,8 @@ std::string rewrite_program(std::string_view source,
   std::vector<std::string> out;
   std::string raw_line;
   std::size_t opaque_index = 0;
+  std::size_t bogus_candidate_index = 0;
+  const auto bogus_selection_phase = bogus_flow_selection_phase(source);
   std::uint64_t salt_counter = 0;
   bool has_entry_label = false;
 
@@ -472,7 +509,7 @@ std::string rewrite_program(std::string_view source,
     if (body.empty()) {
       continue;
     }
-    const auto rewritten = rewriter(body, opaque_index, salt_counter);
+    const auto rewritten = rewriter(body, opaque_index, salt_counter, bogus_candidate_index, bogus_selection_phase);
     out.insert(out.end(), rewritten.begin(), rewritten.end());
   }
 
@@ -489,8 +526,19 @@ std::string obfuscate_vm1_assembly(std::string_view source, unsigned depth, bool
   return rewrite_program(
       source,
       temps,
-      [&](const std::string& body, std::size_t& opaque_index, std::uint64_t& salt_counter) {
-        return rewrite_vm1_body(body, temps, depth, inject_opaque_predicates, opaque_index, salt_counter);
+      [&](const std::string& body,
+          std::size_t& opaque_index,
+          std::uint64_t& salt_counter,
+          std::size_t& bogus_candidate_index,
+          std::size_t bogus_selection_phase) {
+        return rewrite_vm1_body(body,
+                                temps,
+                                depth,
+                                inject_opaque_predicates,
+                                opaque_index,
+                                salt_counter,
+                                bogus_candidate_index,
+                                bogus_selection_phase);
       },
       [&](int one_reg) { return "ldi_u64 " + vm1_reg(one_reg); });
 }
@@ -503,8 +551,19 @@ std::string obfuscate_vm2_assembly(std::string_view source, unsigned depth, bool
   return rewrite_program(
       source,
       temps,
-      [&](const std::string& body, std::size_t& opaque_index, std::uint64_t& salt_counter) {
-        return rewrite_vm2_body(body, temps, depth, inject_opaque_predicates, opaque_index, salt_counter);
+      [&](const std::string& body,
+          std::size_t& opaque_index,
+          std::uint64_t& salt_counter,
+          std::size_t& bogus_candidate_index,
+          std::size_t bogus_selection_phase) {
+        return rewrite_vm2_body(body,
+                                temps,
+                                depth,
+                                inject_opaque_predicates,
+                                opaque_index,
+                                salt_counter,
+                                bogus_candidate_index,
+                                bogus_selection_phase);
       },
       [&](int one_reg) { return "ildimm " + vm2_reg(one_reg); });
 }

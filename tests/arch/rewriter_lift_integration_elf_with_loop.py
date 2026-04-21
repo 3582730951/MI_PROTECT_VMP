@@ -183,6 +183,7 @@ add_library(vmp_runtime_cryptor STATIC
 target_include_directories(vmp_runtime_cryptor PUBLIC {source_root}/runtime/cryptor/include)
 target_link_libraries(vmp_runtime_cryptor PUBLIC vmp_runtime_audit vmp_runtime_strings)
 add_library(vmp_runtime_obfuscation STATIC
+  {source_root}/runtime/obfuscation/src/bogus_flow.cpp
   {source_root}/runtime/obfuscation/src/mba.cpp
   {source_root}/runtime/obfuscation/src/opaque.cpp)
 target_include_directories(vmp_runtime_obfuscation PUBLIC {source_root}/runtime/obfuscation/include)
