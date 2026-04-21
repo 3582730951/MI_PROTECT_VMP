@@ -33,6 +33,10 @@ add_executable(vmp-vm1-asm ${CMAKE_CURRENT_SOURCE_DIR}/src/vmp_vm1_asm.cpp)
 target_link_libraries(vmp-vm1-asm PRIVATE vmp_runtime_vm1)
 set_target_properties(vmp-vm1-asm PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tools)
 
+add_executable(vmp-vm1-layout ${CMAKE_CURRENT_SOURCE_DIR}/src/vmp_vm1_layout.cpp)
+target_link_libraries(vmp-vm1-layout PRIVATE vmp_runtime_vm1 vmp_runtime_integrity)
+set_target_properties(vmp-vm1-layout PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tools)
+
 add_executable(vmp-vm1-run ${CMAKE_CURRENT_SOURCE_DIR}/src/vmp_vm1_run.cpp)
 target_link_libraries(vmp-vm1-run PRIVATE vmp_runtime_vm1 vmp_runtime_audit vmp_runtime_strings vmp_runtime_state nlohmann_json::nlohmann_json)
 if(UNIX AND NOT APPLE)
@@ -45,6 +49,10 @@ set_target_properties(vmp-vm1-run PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BI
 add_executable(vmp-vm2-asm ${CMAKE_CURRENT_SOURCE_DIR}/src/vmp_vm2_asm.cpp)
 target_link_libraries(vmp-vm2-asm PRIVATE vmp_runtime_vm2)
 set_target_properties(vmp-vm2-asm PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tools)
+
+add_executable(vmp-vm2-layout ${CMAKE_CURRENT_SOURCE_DIR}/src/vmp_vm2_layout.cpp)
+target_link_libraries(vmp-vm2-layout PRIVATE vmp_runtime_vm2 vmp_runtime_integrity)
+set_target_properties(vmp-vm2-layout PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tools)
 
 add_executable(vmp-vm2-run ${CMAKE_CURRENT_SOURCE_DIR}/src/vmp_vm2_run.cpp)
 target_link_libraries(vmp-vm2-run PRIVATE vmp_runtime_vm2 vmp_runtime_audit vmp_runtime_strings vmp_runtime_state nlohmann_json::nlohmann_json)
@@ -62,6 +70,11 @@ set_target_properties(vmp-profile-tool PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMA
 add_executable(vmp-integrity-probe ${CMAKE_CURRENT_SOURCE_DIR}/src/vmp_integrity_probe.cpp)
 target_link_libraries(vmp-integrity-probe PRIVATE vmp_runtime_integrity vmp_runtime_strings vmp_runtime_vm1 vmp_runtime_vm2 vmp_runtime_audit nlohmann_json::nlohmann_json)
 set_target_properties(vmp-integrity-probe PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tools)
+
+
+add_executable(vmp-trampoline-inject ${CMAKE_CURRENT_SOURCE_DIR}/src/vmp_trampoline_inject.cpp)
+target_link_libraries(vmp-trampoline-inject PRIVATE vmp_backend_rewriter vmp_policy vmp_runtime_trampoline vmp_runtime_strings nlohmann_json::nlohmann_json)
+set_target_properties(vmp-trampoline-inject PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tools)
 
 
 if(VMP_PLATFORM STREQUAL "windows")
@@ -90,3 +103,6 @@ endif()
 add_executable(vmp-state-probe ${CMAKE_CURRENT_SOURCE_DIR}/src/vmp_state_probe.cpp)
 target_link_libraries(vmp-state-probe PRIVATE vmp_runtime_state vmp_runtime_audit vmp_runtime_strings vmp_runtime_integrity nlohmann_json::nlohmann_json)
 set_target_properties(vmp-state-probe PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tools)
+
+add_subdirectory(${CMAKE_SOURCE_DIR}/tests/runtime_reverse_layout
+  ${CMAKE_BINARY_DIR}/tests/runtime_reverse_layout)

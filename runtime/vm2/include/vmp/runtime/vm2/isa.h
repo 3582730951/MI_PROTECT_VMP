@@ -17,6 +17,7 @@ inline constexpr std::size_t kVm2DefaultStackSize = 128u * 1024u;
 inline constexpr std::size_t kVm2KeyContextIdSize = 16u;
 inline constexpr std::size_t kOpcodeMapSeedSize = 16u;
 inline constexpr std::uint16_t VMP_FLAG_OPCODE_ENCRYPTED = 0x0001u;
+inline constexpr std::uint16_t VMP_FLAG_REVERSE_ORDER = 0x0002u;
 
 union Vec128 {
   struct {

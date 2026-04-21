@@ -274,6 +274,66 @@ json lift_diag_json(const std::vector<vmp::arch::common::Diagnostic>& diags) {
   return out;
 }
 
+std::optional<vmp::runtime::trampoline::TrampolineArch> trampoline_arch_for_machine(Elf64_Half machine) {
+  using vmp::runtime::trampoline::TrampolineArch;
+  switch (machine) {
+    case EM_X86_64: return TrampolineArch::x64;
+    case EM_386: return TrampolineArch::x86;
+    case EM_ARM: return TrampolineArch::arm;
+    case EM_AARCH64: return TrampolineArch::arm64;
+    default: return std::nullopt;
+  }
+}
+
+vmp::runtime::trampoline::KeyContextId resolve_trampoline_key_context(const RewriteOptions& options,
+                                                                      const std::string& seed_text_base,
+                                                                      Elf64_Half machine) {
+  using vmp::runtime::trampoline::KeyContextId;
+  KeyContextId key_context{};
+  if (!options.trampoline_key_context_id.empty()) {
+    if (options.trampoline_key_context_id.size() != key_context.size()) {
+      throw std::runtime_error("rewriter: trampoline key_context_id must be exactly 16 bytes");
+    }
+    std::copy(options.trampoline_key_context_id.begin(), options.trampoline_key_context_id.end(), key_context.begin());
+    return key_context;
+  }
+  const auto seed_text = seed_text_base + "|" + std::to_string(machine) + "|" + options.trampoline_dispatcher_symbol;
+  const auto digest = vmp::runtime::strings::sha256(vmp::runtime::strings::to_bytes(seed_text));
+  std::copy(digest.begin(), digest.begin() + static_cast<std::ptrdiff_t>(key_context.size()), key_context.begin());
+  return key_context;
+}
+
+std::vector<std::uint8_t> arch_nop_fill(vmp::runtime::trampoline::TrampolineArch arch, std::size_t size) {
+  std::vector<std::uint8_t> out(size, 0);
+  switch (arch) {
+    case vmp::runtime::trampoline::TrampolineArch::x86:
+    case vmp::runtime::trampoline::TrampolineArch::x64:
+      std::fill(out.begin(), out.end(), 0x90);
+      return out;
+    case vmp::runtime::trampoline::TrampolineArch::arm: {
+      const std::uint32_t nop = 0xE1A00000u;
+      for (std::size_t i = 0; i + 4 <= size; i += 4) {
+        out[i] = static_cast<std::uint8_t>(nop & 0xffu);
+        out[i + 1] = static_cast<std::uint8_t>((nop >> 8u) & 0xffu);
+        out[i + 2] = static_cast<std::uint8_t>((nop >> 16u) & 0xffu);
+        out[i + 3] = static_cast<std::uint8_t>((nop >> 24u) & 0xffu);
+      }
+      return out;
+    }
+    case vmp::runtime::trampoline::TrampolineArch::arm64: {
+      const std::uint32_t nop = 0xD503201Fu;
+      for (std::size_t i = 0; i + 4 <= size; i += 4) {
+        out[i] = static_cast<std::uint8_t>(nop & 0xffu);
+        out[i + 1] = static_cast<std::uint8_t>((nop >> 8u) & 0xffu);
+        out[i + 2] = static_cast<std::uint8_t>((nop >> 16u) & 0xffu);
+        out[i + 3] = static_cast<std::uint8_t>((nop >> 24u) & 0xffu);
+      }
+      return out;
+    }
+  }
+  return out;
+}
+
 }  // namespace
 
 ElfContainer load(const std::filesystem::path& path) { return to_container(parse_bytes(detail::read_file(path)), path); }
@@ -288,6 +348,22 @@ ElfContainer apply(const ElfContainer& input, const vmp::policy::PolicyIR& polic
   thunk_meta["container"] = "elf";
   thunk_meta["thunks"] = json::array();
   std::vector<VmpCodeRecord> vmpcode_records;
+  vmp::runtime::trampoline::TrampolineBundle trampoline_bundle;
+  const auto trampoline_arch = trampoline_arch_for_machine(parsed.ehdr.e_machine);
+  if (options.enable_trampoline) {
+    if (!trampoline_arch.has_value()) {
+      throw std::runtime_error("rewriter: trampoline injection unsupported for this ELF machine");
+    }
+    trampoline_bundle.arch = *trampoline_arch;
+    trampoline_bundle.key_context_id = resolve_trampoline_key_context(options, input.source_path.string(), parsed.ehdr.e_machine);
+    thunk_meta["trampoline"] = {
+        {"arch", vmp::runtime::trampoline::to_string(*trampoline_arch)},
+        {"dispatcher_symbol", options.trampoline_dispatcher_symbol},
+        {"key_context_id", vmp::runtime::strings::hex_encode(std::vector<std::uint8_t>(
+                               trampoline_bundle.key_context_id.begin(), trampoline_bundle.key_context_id.end()))},
+    };
+  }
+  vmp::runtime::trampoline::TokenManager token_manager;
   std::uint64_t next_bundle_id = 1;
   std::uint64_t vm1_helper_addr = 0;
   if (const auto helper = find_symbol(parsed, "vmp_dispatch_vm1_sysv2")) vm1_helper_addr = helper->first.sym.st_value;
@@ -297,7 +373,38 @@ ElfContainer apply(const ElfContainer& input, const vmp::policy::PolicyIR& polic
     const auto located = find_symbol(parsed, target.symbol);
     if (target.vm1 || target.vm2) {
       json thunk_entry{{"symbol", target.symbol}, {"domain", target.vm2 ? "vm2" : "vm1"}, {"mode", "passthrough"}};
-      if (options.enable_lift && located) {
+      if (options.enable_trampoline && located) {
+        const auto dispatcher = find_symbol(parsed, options.trampoline_dispatcher_symbol);
+        if (!dispatcher) {
+          throw std::runtime_error("rewriter: trampoline dispatcher symbol not found: " + options.trampoline_dispatcher_symbol);
+        }
+        const auto& [sym, sec] = *located;
+        const auto file_off = symbol_file_offset(sym, sec, 0);
+        const auto code_size = static_cast<std::size_t>(sym.sym.st_size);
+        if (code_size == 0 || file_off + code_size > parsed.bytes.size()) {
+          throw std::runtime_error("rewriter: invalid ELF function range for trampoline target: " + target.symbol);
+        }
+        auto entry = token_manager.register_entry(trampoline_bundle.key_context_id, sym.sym.st_value, 0, target.symbol);
+        const auto stub = vmp::runtime::trampoline::generate_trampoline(
+            *trampoline_arch, entry.token, sym.sym.st_value, dispatcher->first.sym.st_value);
+        if (code_size < stub.bytes.size()) {
+          throw std::runtime_error("rewriter: function too small for trampoline patch: " + target.symbol);
+        }
+        const auto relocated_offset = static_cast<std::uint64_t>(trampoline_bundle.code_blob.size());
+        trampoline_bundle.code_blob.insert(trampoline_bundle.code_blob.end(),
+                                           parsed.bytes.begin() + static_cast<std::ptrdiff_t>(file_off),
+                                           parsed.bytes.begin() + static_cast<std::ptrdiff_t>(file_off + code_size));
+        trampoline_bundle.records.push_back(
+            vmp::runtime::trampoline::TrampolineBundleRecord{entry, relocated_offset, static_cast<std::uint32_t>(code_size)});
+        auto fill = arch_nop_fill(*trampoline_arch, code_size);
+        std::copy(fill.begin(), fill.end(), bytes.begin() + static_cast<std::ptrdiff_t>(file_off));
+        std::copy(stub.bytes.begin(), stub.bytes.end(), bytes.begin() + static_cast<std::ptrdiff_t>(file_off));
+        thunk_entry["mode"] = "token_trampoline";
+        thunk_entry["token"] = vmp::runtime::trampoline::token_hex(entry.token);
+        thunk_entry["dispatcher_symbol"] = options.trampoline_dispatcher_symbol;
+        thunk_entry["patched"] = true;
+        thunk_entry["relocated_size"] = code_size;
+      } else if (options.enable_lift && located) {
         vmp::arch::common::CallingConvention cc{};
         if (auto lifter = make_lifter(parsed, target, cc); lifter) {
           const auto& [sym, sec] = *located;
@@ -371,6 +478,9 @@ ElfContainer apply(const ElfContainer& input, const vmp::policy::PolicyIR& polic
   }
   if (!vmpcode_records.empty()) {
     extra_sections.push_back({".vmpcode", serialize_vmpcode(vmpcode_records)});
+  }
+  if (!trampoline_bundle.records.empty()) {
+    extra_sections.push_back({".vmptrmp", trampoline_bundle.serialize()});
   }
   extra_sections.push_back({".vmp_init_array", std::vector<std::uint8_t>(8, 0)});
   if (!thunk_meta["thunks"].empty()) {

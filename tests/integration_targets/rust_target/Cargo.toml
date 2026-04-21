@@ -1,0 +1,16 @@
+[package]
+name = "integration-rust-target"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+vmp-macros = { path = "../../../bindings/rust/vmp-macros" }
+
+[profile.release]
+codegen-units = 1
+lto = false
+panic = "abort"
+strip = false
+
+[workspace]

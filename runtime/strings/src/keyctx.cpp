@@ -12,6 +12,13 @@ namespace {
 std::mutex g_registry_mutex;
 std::vector<std::weak_ptr<KeyContext::SlotBook>> g_registry;
 
+std::string normalize_purpose_tag(std::string_view purpose_tag) {
+  if (purpose_tag == "string-pool") {
+    return "vmp.strings.key.v2";
+  }
+  return std::string(purpose_tag);
+}
+
 }  // namespace
 
 struct KeyContext::SlotBook {
@@ -61,11 +68,15 @@ KeyContext::KeyContext(MasterKeyHandle master_key_handle, std::vector<std::uint8
 
 DerivedKey KeyContext::derive_subkey(std::string_view purpose_tag) const {
   auto master = master_key_handle_.materialize();
-  const auto prk = hkdf_extract_sha256(salt_, master);
-  const auto okm = hkdf_expand_sha256(prk, to_bytes(purpose_tag), 32);
+  const auto info = normalize_purpose_tag(purpose_tag);
+  auto hkdf_salt = salt_;
+  hkdf_salt.insert(hkdf_salt.end(), info.begin(), info.end());
+  const auto prk = hkdf_extract_sha256(hkdf_salt, master);
+  const auto okm = hkdf_expand_sha256(prk, to_bytes(info), 32);
   std::array<std::uint8_t, 32> out{};
   std::copy(okm.begin(), okm.end(), out.begin());
   secure_memzero(master.data(), master.size());
+  secure_memzero(hkdf_salt.data(), hkdf_salt.size());
   {
     std::lock_guard<std::mutex> lock(slot_book_->mutex);
     slot_book_->slots.push_back(out);

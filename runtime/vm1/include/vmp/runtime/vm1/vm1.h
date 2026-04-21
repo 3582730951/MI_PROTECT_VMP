@@ -95,6 +95,11 @@ class Vm1Module {
   std::array<std::uint8_t, kOpcodeMapSeedSize> opcode_map_seed{};
   std::uint32_t opcode_map_marker_crc32 = 0;
   std::vector<std::uint8_t> code;
+  std::vector<std::uint8_t> reverse_code;
+  std::vector<std::uint16_t> reverse_insn_lengths;
+  std::vector<std::uint32_t> forward_instruction_start_by_pc;
+  std::vector<std::uint16_t> forward_instruction_length_by_pc;
+  std::vector<std::uint64_t> reverse_pc_to_forward_pc;
   std::vector<ConstPoolEntry> const_pool;
   std::uint64_t runtime_id = 0;
   mutable std::unordered_map<std::uint32_t, std::uint64_t> block_hit_counters;
@@ -196,6 +201,7 @@ struct AssembleOptions {
 Vm1Module assemble_module_text(std::string_view text, std::uint16_t module_flags = 0);
 Vm1Module assemble_module_text(std::string_view text, const AssembleOptions& options);
 std::uint32_t serialized_body_crc32(const std::vector<std::uint8_t>& bytes);
+std::vector<std::uint16_t> instruction_lengths(const Vm1Module& module);
 std::string disassemble_module(const Vm1Module& module);
 std::string opcode_name(Opcode opcode);
 const std::vector<Opcode>& canonical_opcode_sequence();

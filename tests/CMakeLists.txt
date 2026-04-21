@@ -195,6 +195,9 @@ add_test(NAME integrity_probe_cli
   COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/runtime_integrity/integrity_probe_cli.py $<TARGET_FILE:vmp-vm1-asm> $<TARGET_FILE:vmp-integrity-probe>)
 set_tests_properties(integrity_probe_cli PROPERTIES PASS_REGULAR_EXPRESSION "integrity_probe_cli OK")
 
+add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/runtime_rolling_opcode
+  ${CMAKE_BINARY_DIR}/tests/runtime_rolling_opcode)
+
 # runtime/strings tests
 add_executable(strings_crypto_vectors ${CMAKE_CURRENT_SOURCE_DIR}/strings/crypto_vectors.cpp)
 target_link_libraries(strings_crypto_vectors PRIVATE vmp_runtime_strings vmp_policy)
@@ -258,6 +261,21 @@ vmp_add_runtime_state_machine_test(terminating_invalidates_jit_and_wipes_keys ${
 
 add_test(NAME vmp_state_probe_cli COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/runtime_state_machine/vmp_state_probe_cli.py $<TARGET_FILE:vmp-state-probe>)
 set_tests_properties(vmp_state_probe_cli PROPERTIES PASS_REGULAR_EXPRESSION "vmp_state_probe_cli OK")
+
+add_subdirectory(${CMAKE_SOURCE_DIR}/tests/runtime_trampoline
+  ${CMAKE_BINARY_DIR}/tests/runtime_trampoline)
+add_subdirectory(${CMAKE_SOURCE_DIR}/tests/runtime_trusted_oracle
+  ${CMAKE_BINARY_DIR}/tests/runtime_trusted_oracle)
+add_subdirectory(${CMAKE_SOURCE_DIR}/tests/runtime_env_integrity
+  ${CMAKE_BINARY_DIR}/tests/runtime_env_integrity)
+add_subdirectory(${CMAKE_SOURCE_DIR}/tests/runtime_dispatcher_hardening
+  ${CMAKE_BINARY_DIR}/tests/runtime_dispatcher_hardening)
+add_subdirectory(${CMAKE_SOURCE_DIR}/tests/runtime_env_detectors
+  ${CMAKE_BINARY_DIR}/tests/runtime_env_detectors)
+add_subdirectory(${CMAKE_SOURCE_DIR}/tests/runtime_crypto_revision
+  ${CMAKE_BINARY_DIR}/tests/runtime_crypto_revision)
+add_subdirectory(${CMAKE_SOURCE_DIR}/tests/runtime_stack_probe
+  ${CMAKE_BINARY_DIR}/tests/runtime_stack_probe)
 add_test(NAME vmp_profile_tool_merge_diff_validate
   COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/runtime_state/vmp_profile_tool_merge_diff_validate.py
           $<TARGET_FILE:vmp-profile-tool>)
@@ -651,6 +669,14 @@ set_tests_properties(rewriter_elf_roundtrip PROPERTIES PASS_REGULAR_EXPRESSION "
 add_test(NAME rewriter_pe_roundtrip
   COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/backends_rewriter/rewriter_pe_roundtrip.py $<TARGET_FILE:vmp-protect> ${CMAKE_BINARY_DIR})
 set_tests_properties(rewriter_pe_roundtrip PROPERTIES PASS_REGULAR_EXPRESSION "rewriter_pe_roundtrip OK" SKIP_REGULAR_EXPRESSION "SKIP_REASON")
+
+add_test(NAME rewriter_pe_security_fix
+  COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/backends_rewriter/rewriter_pe_security_fix.py $<TARGET_FILE:vmp-protect> $<TARGET_FILE:vmp-trampoline-inject> ${CMAKE_BINARY_DIR})
+set_tests_properties(rewriter_pe_security_fix PROPERTIES PASS_REGULAR_EXPRESSION "rewriter_pe_security_fix OK" SKIP_REGULAR_EXPRESSION "SKIP_REASON")
+
+add_test(NAME runtime_metadata_encrypt_pe
+  COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/runtime_metadata_encrypt/metadata_encrypt_pe.py $<TARGET_FILE:vmp-protect> $<TARGET_FILE:vmp-trampoline-inject> ${CMAKE_BINARY_DIR})
+set_tests_properties(runtime_metadata_encrypt_pe PROPERTIES PASS_REGULAR_EXPRESSION "runtime_metadata_encrypt_pe OK" SKIP_REGULAR_EXPRESSION "SKIP_REASON")
 
 add_test(NAME rewriter_macho_roundtrip
   COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/backends_rewriter/rewriter_macho_roundtrip.py $<TARGET_FILE:vmp-protect> ${CMAKE_BINARY_DIR})

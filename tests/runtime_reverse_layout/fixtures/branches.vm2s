@@ -1,0 +1,19 @@
+  ildimm r1, 0
+  ildimm r2, 0
+  ildimm r3, 6
+loop:
+  isub r4, r2, r3
+  jp p0, @done
+  iadd r1, r1, r2
+  ildimm r5, 1
+  iadd r2, r2, r5
+  jmp @loop
+done:
+  ildimm r6, 15
+  isub r7, r1, r6
+  jp p0, @ok
+  ildimm r0, 999
+  bret
+ok:
+  imov r0, r1
+  bret

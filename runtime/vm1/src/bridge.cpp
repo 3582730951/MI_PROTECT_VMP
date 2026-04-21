@@ -3,6 +3,7 @@
 #include <memory>
 #include <mutex>
 
+#include <vmp/runtime/cryptor/rolling_opcode_vm1.h>
 #include <vmp/runtime/vm1/vm1.h>
 
 namespace vmp::runtime::bridge {
@@ -53,6 +54,7 @@ DomainCallResult BridgeRegistry::call(Domain target, std::uint32_t id, const Dom
         if (it == vm1_handlers_.end() || it->second == nullptr) {
           throw BridgeException("bridge: vm1 module not found");
         }
+        vmp::runtime::cryptor::vm1::notify_domain_switch(*it->second);
         vmp::runtime::vm1::Vm1Context context(*it->second);
         context.bridge_registry = this;
         context.max_bridge_depth = max_depth;

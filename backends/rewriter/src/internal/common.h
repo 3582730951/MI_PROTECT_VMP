@@ -19,7 +19,9 @@
 
 #include <vmp/backend/rewriter_backend.h>
 #include <vmp/runtime/strings/cipher.h>
+#include <vmp/runtime/strings/obfstr.h>
 #include <vmp/runtime/strings/keyctx.h>
+#include <vmp/runtime/trampoline/trampoline.h>
 
 namespace vmp::backend::rewriter::detail {
 
@@ -237,7 +239,31 @@ inline std::string vm_thunk_descriptor_json(const std::vector<BinaryPolicyTarget
     root["thunks"].push_back({
         {"symbol", target.symbol},
         {"domain", target.vm2 ? "vm2" : "vm1"},
-        {"bridge_symbol", target.vm2 ? "vmp_runtime_bridge_vm2" : "vmp_runtime_bridge_vm1"},
+        {"bridge_symbol", target.vm2 ? vmp::runtime::strings::obf::decode(VMP_OBFSTR("vmp_runtime_bridge_vm2")) : vmp::runtime::strings::obf::decode(VMP_OBFSTR("vmp_runtime_bridge_vm1"))},
+    });
+  }
+  return root.dump(2);
+}
+
+inline std::string trampoline_descriptor_json(const std::vector<BinaryPolicyTarget>& targets,
+                                              const RewriteOptions& options,
+                                              std::string_view container_tag) {
+  json root;
+  root["container"] = container_tag;
+  root["dispatcher_symbol"] = options.trampoline_dispatcher_symbol;
+  root["enable_trampoline"] = options.enable_trampoline;
+  root["arch"] = VMP_ARCH_STR;
+  if (!options.trampoline_key_context_id.empty()) {
+    root["key_context_id"] = vmp::runtime::strings::hex_encode(options.trampoline_key_context_id);
+  }
+  for (const auto& target : targets) {
+    if (!target.vm1 && !target.vm2) {
+      continue;
+    }
+    root["entries"].push_back({
+        {"symbol", target.symbol},
+        {"domain", target.vm2 ? "vm2" : "vm1"},
+        {"mode", "token_trampoline"},
     });
   }
   return root.dump(2);

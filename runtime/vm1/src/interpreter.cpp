@@ -11,6 +11,9 @@
 #if VMP_WITH_JIT
 #include <vmp/runtime/jit/vm1_jit.h>
 #endif
+#include <vmp/runtime/cryptor/rolling_opcode_vm1.h>
+#include <vmp/runtime/env_integrity/monitor.h>
+#include <vmp/runtime/stack_probe/probe.h>
 
 namespace vmp::runtime::vm1 {
 namespace {
@@ -20,42 +23,66 @@ struct BlockExecutionResult {
   bool halted = false;
 };
 
-std::uint16_t read_u16(const std::vector<std::uint8_t>& code, std::size_t& pc) {
-  if (pc + 2 > code.size()) {
-    throw VmException(VmTrapCode::invalid_module, static_cast<std::uint32_t>(pc), "vm1: truncated u16 operand");
+std::uint8_t fetch_byte(const Vm1Module& module, std::size_t forward_pc) {
+  if (forward_pc >= module.code.size()) {
+    throw VmException(VmTrapCode::invalid_module, static_cast<std::uint32_t>(forward_pc), "vm1: pc out of range");
   }
-  std::uint16_t value = static_cast<std::uint16_t>(code[pc]) |
-                        static_cast<std::uint16_t>(code[pc + 1] << 8u);
-  pc += 2;
-  return value;
+  if ((module.module_flags & VMP_FLAG_OPCODE_ENCRYPTED) != 0u) {
+    return vmp::runtime::cryptor::vm1::fetch_byte(module, forward_pc);
+  }
+  if ((module.module_flags & VMP_FLAG_REVERSE_ORDER) == 0u) {
+    return module.code[forward_pc];
+  }
+  if (module.reverse_code.empty() || module.forward_instruction_start_by_pc.size() != module.code.size() ||
+      module.forward_instruction_length_by_pc.size() != module.code.size()) {
+    throw VmException(VmTrapCode::invalid_module, static_cast<std::uint32_t>(forward_pc), "vm1: reverse layout cache missing");
+  }
+  const auto inst_start = module.forward_instruction_start_by_pc[forward_pc];
+  const auto inst_length = module.forward_instruction_length_by_pc[forward_pc];
+  if (inst_length == 0u) {
+    throw VmException(VmTrapCode::invalid_module, static_cast<std::uint32_t>(forward_pc), "vm1: invalid reverse instruction metadata");
+  }
+  const auto reverse_pc = module.code.size() - static_cast<std::size_t>(inst_start) - inst_length +
+                          (forward_pc - static_cast<std::size_t>(inst_start));
+  return module.reverse_code.at(reverse_pc);
 }
 
-std::uint32_t read_u32(const std::vector<std::uint8_t>& code, std::size_t& pc) {
-  if (pc + 4 > code.size()) {
+std::uint16_t read_u16(const Vm1Module& module, std::size_t& pc) {
+  if (pc + 2 > module.code.size()) {
+    throw VmException(VmTrapCode::invalid_module, static_cast<std::uint32_t>(pc), "vm1: truncated u16 operand");
+  }
+  const auto lo = fetch_byte(module, pc);
+  const auto hi = fetch_byte(module, pc + 1u);
+  pc += 2;
+  return static_cast<std::uint16_t>(lo) | static_cast<std::uint16_t>(hi << 8u);
+}
+
+std::uint32_t read_u32(const Vm1Module& module, std::size_t& pc) {
+  if (pc + 4 > module.code.size()) {
     throw VmException(VmTrapCode::invalid_module, static_cast<std::uint32_t>(pc), "vm1: truncated u32 operand");
   }
   std::uint32_t value = 0;
   for (int i = 0; i < 4; ++i) {
-    value |= static_cast<std::uint32_t>(code[pc + static_cast<std::size_t>(i)]) << (8 * i);
+    value |= static_cast<std::uint32_t>(fetch_byte(module, pc + static_cast<std::size_t>(i))) << (8 * i);
   }
   pc += 4;
   return value;
 }
 
-std::uint64_t read_u64(const std::vector<std::uint8_t>& code, std::size_t& pc) {
-  if (pc + 8 > code.size()) {
+std::uint64_t read_u64(const Vm1Module& module, std::size_t& pc) {
+  if (pc + 8 > module.code.size()) {
     throw VmException(VmTrapCode::invalid_module, static_cast<std::uint32_t>(pc), "vm1: truncated u64 operand");
   }
   std::uint64_t value = 0;
   for (int i = 0; i < 8; ++i) {
-    value |= static_cast<std::uint64_t>(code[pc + static_cast<std::size_t>(i)]) << (8 * i);
+    value |= static_cast<std::uint64_t>(fetch_byte(module, pc + static_cast<std::size_t>(i))) << (8 * i);
   }
   pc += 8;
   return value;
 }
 
-std::int32_t read_i32(const std::vector<std::uint8_t>& code, std::size_t& pc) {
-  return static_cast<std::int32_t>(read_u32(code, pc));
+std::int32_t read_i32(const Vm1Module& module, std::size_t& pc) {
+  return static_cast<std::int32_t>(read_u32(module, pc));
 }
 
 double bit_cast_double(std::uint64_t value) {
@@ -231,6 +258,13 @@ BlockExecutionResult execute_basic_block(Vm1Context& context, std::uint32_t star
   if (context.module == nullptr) {
     throw VmException(VmTrapCode::invalid_module, 0, "vm1: null module");
   }
+  (void)vmp::runtime::stack_probe::default_stack_probe().maybe_probe(
+      vmp::runtime::stack_probe::ProbeRequest{
+          vmp::runtime::stack_probe::selector_low12(reinterpret_cast<std::uintptr_t>(context.module) ^ context.module->id()),
+          vmp::runtime::stack_probe::ProbeTriggerSite::vm1_handler_dispatch,
+          vmp::runtime::stack_probe::kDefaultMaxFrames},
+      context.audit_dispatcher);
+  auto dispatch_scope = vmp::runtime::cryptor::vm1::begin_dispatch(*context.module);
   if (start_pc >= context.module->code.size()) {
     throw VmException(VmTrapCode::invalid_module, start_pc, "vm1: pc out of range");
   }
@@ -242,7 +276,7 @@ BlockExecutionResult execute_basic_block(Vm1Context& context, std::uint32_t star
     control_flow_changed = false;
     const std::uint32_t instruction_pc = context.pc;
     std::size_t cursor = context.pc;
-    const auto opcode = static_cast<Opcode>(read_u16(context.module->code, cursor));
+    const auto opcode = static_cast<Opcode>(read_u16(*context.module, cursor));
     context.pc = static_cast<std::uint32_t>(cursor);
     switch (opcode) {
       case Opcode::nop:
@@ -251,29 +285,29 @@ BlockExecutionResult execute_basic_block(Vm1Context& context, std::uint32_t star
         dispatch_audit(context, "vm1_breakpoint", "breakpoint opcode executed");
         break;
       case Opcode::trap: {
-        const auto code = read_u32(context.module->code, cursor);
+        const auto code = read_u32(*context.module, cursor);
         context.pc = static_cast<std::uint32_t>(cursor);
         std::ostringstream oss;
         oss << "vm1: trap opcode status=" << code;
         raise_trap(context, VmTrapCode::trap_instruction, oss.str(), "vm1_trap");
       }
       case Opcode::ldi64: {
-        const auto dst = context.module->code.at(cursor++);
-        const auto imm = read_u64(context.module->code, cursor);
+        const auto dst = fetch_byte(*context.module, cursor++);
+        const auto imm = read_u64(*context.module, cursor);
         context.vr.at(dst) = imm;
         set_logic_flags(context, imm);
         break;
       }
       case Opcode::ldi_u64: {
-        const auto dst = context.module->code.at(cursor++);
-        const auto imm = read_u64(context.module->code, cursor);
+        const auto dst = fetch_byte(*context.module, cursor++);
+        const auto imm = read_u64(*context.module, cursor);
         context.vr.at(dst) = imm;
         set_logic_flags(context, imm);
         break;
       }
       case Opcode::ldi_f64: {
-        const auto dst = context.module->code.at(cursor++);
-        const auto imm = bit_cast_double(read_u64(context.module->code, cursor));
+        const auto dst = fetch_byte(*context.module, cursor++);
+        const auto imm = bit_cast_double(read_u64(*context.module, cursor));
         if (dst >= kVm1FloatRegisterCount) {
           raise_trap(context, VmTrapCode::invalid_register, "vm1: float register out of range");
         }
@@ -282,8 +316,8 @@ BlockExecutionResult execute_basic_block(Vm1Context& context, std::uint32_t star
         break;
       }
       case Opcode::mov: {
-        const auto dst = context.module->code.at(cursor++);
-        const auto src = context.module->code.at(cursor++);
+        const auto dst = fetch_byte(*context.module, cursor++);
+        const auto src = fetch_byte(*context.module, cursor++);
         context.vr.at(dst) = context.vr.at(src);
         set_logic_flags(context, context.vr.at(dst));
         break;
@@ -299,9 +333,9 @@ BlockExecutionResult execute_basic_block(Vm1Context& context, std::uint32_t star
       case Opcode::shl:
       case Opcode::shr:
       case Opcode::sar: {
-        const auto dst = context.module->code.at(cursor++);
-        const auto lhs_reg = context.module->code.at(cursor++);
-        const auto rhs_reg = context.module->code.at(cursor++);
+        const auto dst = fetch_byte(*context.module, cursor++);
+        const auto lhs_reg = fetch_byte(*context.module, cursor++);
+        const auto rhs_reg = fetch_byte(*context.module, cursor++);
         const auto lhs = context.vr.at(lhs_reg);
         const auto rhs = context.vr.at(rhs_reg);
         std::uint64_t result = 0;
@@ -378,8 +412,8 @@ BlockExecutionResult execute_basic_block(Vm1Context& context, std::uint32_t star
       case Opcode::clz:
       case Opcode::ctz:
       case Opcode::bswap: {
-        const auto dst = context.module->code.at(cursor++);
-        const auto src = context.module->code.at(cursor++);
+        const auto dst = fetch_byte(*context.module, cursor++);
+        const auto src = fetch_byte(*context.module, cursor++);
         std::uint64_t result = 0;
         if (opcode == Opcode::neg) {
           result = static_cast<std::uint64_t>(-static_cast<std::int64_t>(context.vr.at(src)));
@@ -400,8 +434,8 @@ BlockExecutionResult execute_basic_block(Vm1Context& context, std::uint32_t star
       }
       case Opcode::cmp:
       case Opcode::test: {
-        const auto lhs_reg = context.module->code.at(cursor++);
-        const auto rhs_reg = context.module->code.at(cursor++);
+        const auto lhs_reg = fetch_byte(*context.module, cursor++);
+        const auto rhs_reg = fetch_byte(*context.module, cursor++);
         const auto lhs = context.vr.at(lhs_reg);
         const auto rhs = context.vr.at(rhs_reg);
         if (opcode == Opcode::cmp) {
@@ -412,8 +446,8 @@ BlockExecutionResult execute_basic_block(Vm1Context& context, std::uint32_t star
         break;
       }
       case Opcode::setcc: {
-        const auto dst = context.module->code.at(cursor++);
-        const auto cc = context.module->code.at(cursor++);
+        const auto dst = fetch_byte(*context.module, cursor++);
+        const auto cc = fetch_byte(*context.module, cursor++);
         context.vr.at(dst) = evaluate_condition_code(context, cc) ? 1u : 0u;
         set_logic_flags(context, context.vr.at(dst));
         break;
@@ -426,9 +460,9 @@ BlockExecutionResult execute_basic_block(Vm1Context& context, std::uint32_t star
       case Opcode::load_sext16:
       case Opcode::load_sext32:
       case Opcode::lea: {
-        const auto dst = context.module->code.at(cursor++);
-        const auto base = context.module->code.at(cursor++);
-        const auto offset = read_i32(context.module->code, cursor);
+        const auto dst = fetch_byte(*context.module, cursor++);
+        const auto base = fetch_byte(*context.module, cursor++);
+        const auto offset = read_i32(*context.module, cursor);
         const auto address = resolve_address(context, base, offset);
         switch (opcode) {
           case Opcode::load_mem8: context.vr.at(dst) = context.read_memory<std::uint8_t>(address); break;
@@ -448,9 +482,9 @@ BlockExecutionResult execute_basic_block(Vm1Context& context, std::uint32_t star
       case Opcode::store_mem16:
       case Opcode::store_mem32:
       case Opcode::store_mem64: {
-        const auto base = context.module->code.at(cursor++);
-        const auto src = context.module->code.at(cursor++);
-        const auto offset = read_i32(context.module->code, cursor);
+        const auto base = fetch_byte(*context.module, cursor++);
+        const auto src = fetch_byte(*context.module, cursor++);
+        const auto offset = read_i32(*context.module, cursor);
         const auto address = resolve_address(context, base, offset);
         switch (opcode) {
           case Opcode::store_mem8: context.write_memory<std::uint8_t>(address, static_cast<std::uint8_t>(context.vr.at(src))); break;
@@ -465,9 +499,9 @@ BlockExecutionResult execute_basic_block(Vm1Context& context, std::uint32_t star
       case Opcode::fsub:
       case Opcode::fmul:
       case Opcode::fdiv: {
-        const auto dst = context.module->code.at(cursor++);
-        const auto lhs = context.module->code.at(cursor++);
-        const auto rhs = context.module->code.at(cursor++);
+        const auto dst = fetch_byte(*context.module, cursor++);
+        const auto lhs = fetch_byte(*context.module, cursor++);
+        const auto rhs = fetch_byte(*context.module, cursor++);
         double result = 0.0;
         if (opcode == Opcode::fadd) result = context.vfr.at(lhs) + context.vfr.at(rhs);
         else if (opcode == Opcode::fsub) result = context.vfr.at(lhs) - context.vfr.at(rhs);
@@ -481,29 +515,29 @@ BlockExecutionResult execute_basic_block(Vm1Context& context, std::uint32_t star
         break;
       }
       case Opcode::fsqrt: {
-        const auto dst = context.module->code.at(cursor++);
-        const auto src = context.module->code.at(cursor++);
+        const auto dst = fetch_byte(*context.module, cursor++);
+        const auto src = fetch_byte(*context.module, cursor++);
         context.vfr.at(dst) = std::sqrt(context.vfr.at(src));
         set_float_flags(context, context.vfr.at(dst));
         break;
       }
       case Opcode::i64_to_f64: {
-        const auto dst = context.module->code.at(cursor++);
-        const auto src = context.module->code.at(cursor++);
+        const auto dst = fetch_byte(*context.module, cursor++);
+        const auto src = fetch_byte(*context.module, cursor++);
         context.vfr.at(dst) = static_cast<double>(static_cast<std::int64_t>(context.vr.at(src)));
         set_float_flags(context, context.vfr.at(dst));
         break;
       }
       case Opcode::f64_to_i64: {
-        const auto dst = context.module->code.at(cursor++);
-        const auto src = context.module->code.at(cursor++);
+        const auto dst = fetch_byte(*context.module, cursor++);
+        const auto src = fetch_byte(*context.module, cursor++);
         context.vr.at(dst) = static_cast<std::uint64_t>(static_cast<std::int64_t>(context.vfr.at(src)));
         set_logic_flags(context, context.vr.at(dst));
         break;
       }
       case Opcode::fcmp: {
-        const auto lhs = context.module->code.at(cursor++);
-        const auto rhs = context.module->code.at(cursor++);
+        const auto lhs = fetch_byte(*context.module, cursor++);
+        const auto rhs = fetch_byte(*context.module, cursor++);
         const auto diff = context.vfr.at(lhs) - context.vfr.at(rhs);
         set_float_flags(context, diff);
         break;
@@ -511,9 +545,9 @@ BlockExecutionResult execute_basic_block(Vm1Context& context, std::uint32_t star
       case Opcode::vadd128:
       case Opcode::vxor128:
       case Opcode::vshuffle128: {
-        const auto dst = context.module->code.at(cursor++);
-        const auto lhs = context.module->code.at(cursor++);
-        const auto rhs = context.module->code.at(cursor++);
+        const auto dst = fetch_byte(*context.module, cursor++);
+        const auto lhs = fetch_byte(*context.module, cursor++);
+        const auto rhs = fetch_byte(*context.module, cursor++);
         auto left = read_vec_pair(context, lhs);
         auto right = read_vec_pair(context, rhs);
         VecPair out{};
@@ -533,9 +567,9 @@ BlockExecutionResult execute_basic_block(Vm1Context& context, std::uint32_t star
       case Opcode::memcpy:
       case Opcode::memset:
       case Opcode::strcmp: {
-        const auto dst = context.module->code.at(cursor++);
-        const auto lhs = context.module->code.at(cursor++);
-        const auto rhs = context.module->code.at(cursor++);
+        const auto dst = fetch_byte(*context.module, cursor++);
+        const auto lhs = fetch_byte(*context.module, cursor++);
+        const auto rhs = fetch_byte(*context.module, cursor++);
         if (opcode == Opcode::memcpy) {
           const auto dest = context.vr.at(dst);
           const auto src = context.vr.at(lhs);
@@ -567,8 +601,8 @@ BlockExecutionResult execute_basic_block(Vm1Context& context, std::uint32_t star
         break;
       }
       case Opcode::strlen: {
-        const auto dst = context.module->code.at(cursor++);
-        const auto src = context.module->code.at(cursor++);
+        const auto dst = fetch_byte(*context.module, cursor++);
+        const auto src = fetch_byte(*context.module, cursor++);
         std::size_t len = 0;
         while (context.read_memory<std::uint8_t>(context.vr.at(src) + len) != 0) ++len;
         context.vr.at(dst) = len;
@@ -576,11 +610,11 @@ BlockExecutionResult execute_basic_block(Vm1Context& context, std::uint32_t star
         break;
       }
       case Opcode::cas_u64: {
-        const auto base = context.module->code.at(cursor++);
-        const auto dst = context.module->code.at(cursor++);
-        const auto offset = read_i32(context.module->code, cursor);
-        const auto expected = context.module->code.at(cursor++);
-        const auto desired = context.module->code.at(cursor++);
+        const auto base = fetch_byte(*context.module, cursor++);
+        const auto dst = fetch_byte(*context.module, cursor++);
+        const auto offset = read_i32(*context.module, cursor);
+        const auto expected = fetch_byte(*context.module, cursor++);
+        const auto desired = fetch_byte(*context.module, cursor++);
         const auto address = resolve_address(context, base, offset);
         const auto old = context.read_memory<std::uint64_t>(address);
         if (old == context.vr.at(expected)) context.write_memory<std::uint64_t>(address, context.vr.at(desired));
@@ -589,10 +623,10 @@ BlockExecutionResult execute_basic_block(Vm1Context& context, std::uint32_t star
         break;
       }
       case Opcode::xchg_u64: {
-        const auto base = context.module->code.at(cursor++);
-        const auto dst = context.module->code.at(cursor++);
-        const auto offset = read_i32(context.module->code, cursor);
-        const auto src = context.module->code.at(cursor++);
+        const auto base = fetch_byte(*context.module, cursor++);
+        const auto dst = fetch_byte(*context.module, cursor++);
+        const auto offset = read_i32(*context.module, cursor);
+        const auto src = fetch_byte(*context.module, cursor++);
         const auto address = resolve_address(context, base, offset);
         const auto old = context.read_memory<std::uint64_t>(address);
         context.write_memory<std::uint64_t>(address, context.vr.at(src));
@@ -601,22 +635,22 @@ BlockExecutionResult execute_basic_block(Vm1Context& context, std::uint32_t star
         break;
       }
       case Opcode::syscall_proxy: {
-        const auto code = read_u32(context.module->code, cursor);
+        const auto code = read_u32(*context.module, cursor);
         dispatch_audit(context, "vm1_syscall_proxy", "syscall_proxy=" + std::to_string(code));
         context.vr[0] = 0;
         set_logic_flags(context, 0);
         break;
       }
       case Opcode::bridge_args: {
-        const auto ic = context.module->code.at(cursor++);
-        const auto fc = context.module->code.at(cursor++);
-        const auto oc = context.module->code.at(cursor++);
+        const auto ic = fetch_byte(*context.module, cursor++);
+        const auto fc = fetch_byte(*context.module, cursor++);
+        const auto oc = fetch_byte(*context.module, cursor++);
         context.vr[31] = (static_cast<std::uint64_t>(ic) << 16u) | (static_cast<std::uint64_t>(fc) << 8u) | oc;
         set_logic_flags(context, context.vr[31]);
         break;
       }
       case Opcode::jmp: {
-        const auto target = read_u32(context.module->code, cursor);
+        const auto target = read_u32(*context.module, cursor);
         context.pc = target;
         control_flow_changed = true;
         break;
@@ -627,9 +661,9 @@ BlockExecutionResult execute_basic_block(Vm1Context& context, std::uint32_t star
       case Opcode::jle:
       case Opcode::jgt:
       case Opcode::jge: {
-        const auto lhs_reg = context.module->code.at(cursor++);
-        const auto rhs_reg = context.module->code.at(cursor++);
-        const auto target = read_u32(context.module->code, cursor);
+        const auto lhs_reg = fetch_byte(*context.module, cursor++);
+        const auto rhs_reg = fetch_byte(*context.module, cursor++);
+        const auto target = read_u32(*context.module, cursor);
         const auto lhs = context.vr.at(lhs_reg);
         const auto rhs = context.vr.at(rhs_reg);
         compare_and_set_flags(context, lhs, rhs);
@@ -648,21 +682,21 @@ BlockExecutionResult execute_basic_block(Vm1Context& context, std::uint32_t star
         break;
       }
       case Opcode::call: {
-        const auto target = read_u32(context.module->code, cursor);
-        const auto arg_count = context.module->code.at(cursor++);
+        const auto target = read_u32(*context.module, cursor);
+        const auto arg_count = fetch_byte(*context.module, cursor++);
         execute_call(context, target, arg_count, static_cast<std::uint32_t>(cursor));
         control_flow_changed = true;
         break;
       }
       case Opcode::call_indirect: {
-        const auto target_reg = context.module->code.at(cursor++);
-        const auto arg_count = context.module->code.at(cursor++);
+        const auto target_reg = fetch_byte(*context.module, cursor++);
+        const auto arg_count = fetch_byte(*context.module, cursor++);
         execute_call(context, static_cast<std::uint32_t>(context.vr.at(target_reg)), arg_count, static_cast<std::uint32_t>(cursor));
         control_flow_changed = true;
         break;
       }
       case Opcode::jmp_indirect: {
-        const auto target_reg = context.module->code.at(cursor++);
+        const auto target_reg = fetch_byte(*context.module, cursor++);
         context.pc = static_cast<std::uint32_t>(context.vr.at(target_reg));
         control_flow_changed = true;
         break;
@@ -672,14 +706,17 @@ BlockExecutionResult execute_basic_block(Vm1Context& context, std::uint32_t star
         control_flow_changed = true;
         break;
       case Opcode::domain_call: {
-        const auto domain = context.module->code.at(cursor++);
-        const auto id = read_u32(context.module->code, cursor);
-        const auto int_count = context.module->code.at(cursor++);
-        const auto float_count = context.module->code.at(cursor++);
-        const auto opaque_count = context.module->code.at(cursor++);
+        const auto domain = fetch_byte(*context.module, cursor++);
+        const auto id = read_u32(*context.module, cursor);
+        const auto int_count = fetch_byte(*context.module, cursor++);
+        const auto float_count = fetch_byte(*context.module, cursor++);
+        const auto opaque_count = fetch_byte(*context.module, cursor++);
         context.pc = static_cast<std::uint32_t>(cursor);
         if (context.bridge_registry == nullptr) {
           raise_trap(context, VmTrapCode::bridge_error, "vm1: bridge registry not configured");
+        }
+        if (bridge_domain_from_byte(domain) == vmp::runtime::bridge::Domain::vm2) {
+          vmp::runtime::cryptor::vm1::notify_domain_switch(*context.module);
         }
         vmp::runtime::bridge::DomainCallArgs args;
         args.ints.reserve(int_count);
@@ -715,23 +752,23 @@ BlockExecutionResult execute_basic_block(Vm1Context& context, std::uint32_t star
         control_flow_changed = true;
         break;
       case Opcode::load_transient_string: {
-        const auto dst = context.module->code.at(cursor++);
-        const auto id = read_u32(context.module->code, cursor);
+        const auto dst = fetch_byte(*context.module, cursor++);
+        const auto id = read_u32(*context.module, cursor);
         context.vr.at(dst) = context.materialize_transient_string(id);
         set_logic_flags(context, context.vr.at(dst));
         break;
       }
       case Opcode::release_transient_string: {
-        const auto src = context.module->code.at(cursor++);
+        const auto src = fetch_byte(*context.module, cursor++);
         context.release_transient_string(context.vr.at(src));
         context.vr.at(src) = 0;
         set_logic_flags(context, 0);
         break;
       }
       case Opcode::transient_read8: {
-        const auto dst = context.module->code.at(cursor++);
-        const auto handle = context.module->code.at(cursor++);
-        const auto index = context.module->code.at(cursor++);
+        const auto dst = fetch_byte(*context.module, cursor++);
+        const auto handle = fetch_byte(*context.module, cursor++);
+        const auto index = fetch_byte(*context.module, cursor++);
         const auto value = context.transient_string(context.vr.at(handle));
         const auto idx = static_cast<std::size_t>(context.vr.at(index));
         context.vr.at(dst) = idx < value.size() ? static_cast<std::uint8_t>(value[idx]) : 0u;
@@ -739,7 +776,7 @@ BlockExecutionResult execute_basic_block(Vm1Context& context, std::uint32_t star
         break;
       }
       case Opcode::transient_wipe: {
-        const auto src = context.module->code.at(cursor++);
+        const auto src = fetch_byte(*context.module, cursor++);
         if (context.vr.at(src) != 0) {
           context.release_transient_string(context.vr.at(src));
         }
@@ -769,6 +806,7 @@ ExecutionResult Vm1Interpreter::execute(Vm1Context& context) {
   if (context.pc > context.module->code.size()) {
     throw VmException(VmTrapCode::invalid_module, context.pc, "vm1: entry pc out of range");
   }
+  (void)vmp::runtime::env_integrity::verify_sensitive_domain_entry("vm1", context.audit_dispatcher);
   try {
     while (!context.execution_halted) {
       const auto block_pc = context.pc;

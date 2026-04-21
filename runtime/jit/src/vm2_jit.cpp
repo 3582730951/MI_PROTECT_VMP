@@ -34,7 +34,10 @@
 #endif
 
 #include <vmp/runtime/audit/audit.h>
+#include <vmp/runtime/cryptor/jit_epoch.h>
+#include <vmp/runtime/cryptor/rolling_opcode_vm2.h>
 #include <vmp/runtime/state/state.h>
+#include <vmp/runtime/trusted_oracle/oracle.h>
 #include <vmp/runtime/strings/cipher.h>
 #include <vmp/runtime/strings/keyctx.h>
 #include <vmp/runtime/vm2/vm2.h>
@@ -481,13 +484,13 @@ bool patch_memory_byte(void* ptr, std::size_t size, std::size_t offset, std::uin
     return false;
   }
 #if defined(_WIN32)
-  DWORD old_protect = 0;
-  if (!::VirtualProtect(ptr, size, PAGE_EXECUTE_READWRITE, &old_protect)) {
+  unsigned long old_protect = 0;
+  if (vmp::runtime::trusted_oracle::DirectSyscall::nt_protect_current_process(ptr, size, PAGE_EXECUTE_READWRITE, &old_protect) != 0) {
     return false;
   }
   static_cast<std::uint8_t*>(ptr)[offset] = value;
-  ::VirtualProtect(ptr, size, old_protect, &old_protect);
-  return true;
+  unsigned long restored = 0;
+  return vmp::runtime::trusted_oracle::DirectSyscall::nt_protect_current_process(ptr, size, old_protect, &restored) == 0;
 #else
   const auto page_size = static_cast<std::size_t>(::sysconf(_SC_PAGESIZE));
   const auto base = reinterpret_cast<std::uintptr_t>(ptr) & ~(static_cast<std::uintptr_t>(page_size) - 1u);
@@ -523,6 +526,7 @@ void write_u64(std::uint8_t*& out, std::uint64_t value) {
 struct Vm2Jit::Impl {
   bool capability_event_emitted = false;
   struct Entry {
+    vmp::runtime::cryptor::JitCacheKey key{};
     std::uint32_t entry_pc = 0;
     std::vector<std::uint32_t> blocks;
     Vm2JitBackend backend = Vm2JitBackend::off;
@@ -551,7 +555,10 @@ struct Vm2Jit::Impl {
     std::size_t used = 0;
     std::uint64_t lru_clock = 0;
     std::array<std::uint8_t, 16> key_context_tag{};
-    std::unordered_map<std::uint32_t, Entry> entries;
+    std::unordered_map<vmp::runtime::cryptor::JitCacheKey,
+                       Entry,
+                       vmp::runtime::cryptor::JitCacheKeyHash>
+        entries;
     std::unordered_set<std::uint32_t> cooldown_entries;
   };
 
@@ -608,6 +615,26 @@ struct Vm2Jit::Impl {
     return cache;
   }
 
+  static vmp::runtime::cryptor::JitCacheKey make_key(std::uint64_t module_id,
+                                                     std::uint32_t entry_pc,
+                                                     std::uint32_t epoch_id) {
+    return vmp::runtime::cryptor::JitCacheKey{module_id, entry_pc, epoch_id};
+  }
+
+  auto find_entry(ModuleCache& cache,
+                  std::uint64_t module_id,
+                  std::uint32_t entry_pc,
+                  std::uint32_t epoch_id) {
+    return cache.entries.find(make_key(module_id, entry_pc, epoch_id));
+  }
+
+  auto find_entry(const ModuleCache& cache,
+                  std::uint64_t module_id,
+                  std::uint32_t entry_pc,
+                  std::uint32_t epoch_id) const {
+    return cache.entries.find(make_key(module_id, entry_pc, epoch_id));
+  }
+
   void destroy_entry(Entry& entry) {
 #if defined(_WIN32)
     if (entry.code_region != nullptr) {
@@ -632,7 +659,9 @@ struct Vm2Jit::Impl {
 
   void erase_entry(const Vm2Module* module, ModuleCache& cache, std::uint32_t entry_pc, Vm2JitLifecycleState terminal_state,
                    const char* audit_type) {
-    auto it = cache.entries.find(entry_pc);
+    auto it = std::find_if(cache.entries.begin(), cache.entries.end(), [&](const auto& item) {
+      return item.second.key.entry_pc == entry_pc;
+    });
     if (it == cache.entries.end()) {
       return;
     }
@@ -662,9 +691,12 @@ struct Vm2Jit::Impl {
       if (victim == cache.entries.end()) {
         break;
       }
-      emit_audit("vm2_jit_evict", "budget pressure module=" + std::to_string(module.id()) + " pc=" + std::to_string(victim->first),
-                 victim->first);
-      erase_entry(&module, cache, victim->first, Vm2JitLifecycleState::evicted, nullptr);
+      emit_audit("vm2_jit_evict",
+                 "budget pressure module=" + std::to_string(module.id()) + " pc=" +
+                     std::to_string(victim->second.key.entry_pc) + " epoch=" +
+                     std::to_string(victim->second.key.epoch_id),
+                 victim->second.key.entry_pc);
+      erase_entry(&module, cache, victim->second.key.entry_pc, Vm2JitLifecycleState::evicted, nullptr);
     }
   }
 
@@ -830,6 +862,9 @@ Vm2Jit& Vm2Jit::instance() {
 
 Vm2Jit::Vm2Jit() : impl_(new Impl{}) {
   impl_->refresh_config_from_env();
+  vmp::runtime::cryptor::RollingOpcodeRegistry::instance().register_epoch_bump_callback(
+      vmp::runtime::cryptor::VmDomain::vm2,
+      [](std::uint64_t module_id, std::uint32_t epoch_id) { Vm2Jit::instance().invalidate_module_for_epoch_change(module_id, epoch_id); });
 #if defined(_WIN32)
   impl_->cache_dir = std::filesystem::temp_directory_path() / ("vmp-vm2-jit-" + std::to_string(::GetCurrentProcessId()));
 #else
@@ -898,6 +933,8 @@ Vm2JitEntry Vm2Jit::compile_if_needed(const Vm2Module& module,
                                       const Vm2Context& context,
                                       std::uint32_t entry_pc,
                                       std::uint64_t hit_count) {
+  vmp::runtime::cryptor::vm2::ensure_registered(module);
+  const auto epoch_id = vmp::runtime::cryptor::vm2::current_epoch_id(module);
   std::lock_guard<std::mutex> lock(impl_->mutex);
   impl_->refresh_config_from_env();
   if (backend_requested() == Vm2JitBackend::off || hit_count < impl_->config.function_hot_threshold) {
@@ -919,7 +956,7 @@ Vm2JitEntry Vm2Jit::compile_if_needed(const Vm2Module& module,
   if (cache.cooldown_entries.find(entry_pc) != cache.cooldown_entries.end()) {
     return nullptr;
   }
-  auto existing = cache.entries.find(entry_pc);
+  auto existing = impl_->find_entry(cache, module.id(), entry_pc, epoch_id);
   if (existing != cache.entries.end()) {
     if (existing->second.stats.state == Vm2JitLifecycleState::ready) {
       return existing->second.fn;
@@ -928,21 +965,26 @@ Vm2JitEntry Vm2Jit::compile_if_needed(const Vm2Module& module,
   }
 
   Impl::Entry placeholder;
+  placeholder.key = Impl::make_key(module.id(), entry_pc, epoch_id);
   placeholder.entry_pc = entry_pc;
   placeholder.stats.state = Vm2JitLifecycleState::compiling;
-  cache.entries.emplace(entry_pc, std::move(placeholder));
+  cache.entries.emplace(placeholder.key, std::move(placeholder));
   try {
     auto blocks = discover_function_blocks(module, entry_pc);
     auto entry = impl_->compile_entry(module, context, entry_pc, blocks);
+    entry.key = Impl::make_key(module.id(), entry_pc, epoch_id);
     entry.stats.compile_count = 1;
     entry.stats.state = Vm2JitLifecycleState::ready;
     impl_->evict_if_needed(module, cache, entry.code_size);
     entry.lru_tick = ++cache.lru_clock;
     cache.used += entry.code_size;
-    cache.entries[entry_pc] = std::move(entry);
-    module.set_function_jit_entry(entry_pc, reinterpret_cast<std::uintptr_t>(cache.entries[entry_pc].fn));
-    impl_->emit_audit("vm2_jit_compile", "module=" + std::to_string(module.id()) + " pc=" + std::to_string(entry_pc), entry_pc);
-    return cache.entries[entry_pc].fn;
+    cache.entries[entry.key] = std::move(entry);
+    module.set_function_jit_entry(entry_pc, reinterpret_cast<std::uintptr_t>(cache.entries[Impl::make_key(module.id(), entry_pc, epoch_id)].fn));
+    impl_->emit_audit("vm2_jit_compile",
+                      "module=" + std::to_string(module.id()) + " pc=" + std::to_string(entry_pc) +
+                          " epoch=" + std::to_string(epoch_id),
+                      entry_pc);
+    return cache.entries[Impl::make_key(module.id(), entry_pc, epoch_id)].fn;
   } catch (const std::exception& ex) {
     impl_->erase_entry(&module, cache, entry_pc, Vm2JitLifecycleState::invalidated, nullptr);
     impl_->emit_audit("vm2_jit_fallback_backend", ex.what(), entry_pc);
@@ -951,6 +993,7 @@ Vm2JitEntry Vm2Jit::compile_if_needed(const Vm2Module& module,
 }
 
 std::uint32_t Vm2Jit::dispatch(Vm2Context& context, std::uint32_t entry_pc) {
+  const auto epoch_id = vmp::runtime::cryptor::vm2::current_epoch_id(*context.module);
   Vm2JitEntry fn = nullptr;
   {
     std::lock_guard<std::mutex> lock(impl_->mutex);
@@ -967,7 +1010,7 @@ std::uint32_t Vm2Jit::dispatch(Vm2Context& context, std::uint32_t entry_pc) {
                         "module=" + std::to_string(context.module->id()) + " reason=key_context_change", entry_pc);
       return std::numeric_limits<std::uint32_t>::max();
     }
-    auto entry_it = cache.entries.find(entry_pc);
+    auto entry_it = impl_->find_entry(cache, context.module->id(), entry_pc, epoch_id);
     if (entry_it == cache.entries.end() || entry_it->second.stats.state != Vm2JitLifecycleState::ready) {
       return std::numeric_limits<std::uint32_t>::max();
     }
@@ -1027,7 +1070,10 @@ void Vm2Jit::invalidate_entry(std::uint64_t module_id, std::uint32_t entry_pc) {
   if (mod_it == impl_->modules.end()) {
     return;
   }
-  auto entry_it = mod_it->second.entries.find(entry_pc);
+  const auto epoch_id =
+      vmp::runtime::cryptor::RollingOpcodeRegistry::instance().current_epoch_id(vmp::runtime::cryptor::VmDomain::vm2,
+                                                                                module_id);
+  auto entry_it = impl_->find_entry(mod_it->second, module_id, entry_pc, epoch_id);
   if (entry_it == mod_it->second.entries.end()) {
     return;
   }
@@ -1042,12 +1088,34 @@ void Vm2Jit::invalidate_entry(std::uint64_t module_id, std::uint32_t entry_pc) {
 }
 
 void Vm2Jit::invalidate_on_event(Vm2JitEventKind kind) {
+  auto invalidate_modules_without_epoch = [&]() {
+    std::vector<std::uint64_t> victims;
+    {
+      std::lock_guard<std::mutex> lock(impl_->mutex);
+      for (const auto& [module_id, _] : impl_->modules) {
+        if (vmp::runtime::cryptor::RollingOpcodeRegistry::instance().current_epoch_id(
+                vmp::runtime::cryptor::VmDomain::vm2, module_id) == 0u) {
+          victims.push_back(module_id);
+        }
+      }
+    }
+    for (const auto module_id : victims) {
+      invalidate_module(module_id);
+    }
+  };
+
   switch (kind) {
     case Vm2JitEventKind::key_rotated:
-      invalidate_all();
+      vmp::runtime::cryptor::RollingOpcodeRegistry::instance().rotate_all(
+          vmp::runtime::cryptor::VmDomain::vm2,
+          vmp::runtime::cryptor::RotationReason::key_rotation);
+      invalidate_modules_without_epoch();
       break;
     case Vm2JitEventKind::integrity_failed:
-      invalidate_all();
+      vmp::runtime::cryptor::RollingOpcodeRegistry::instance().rotate_all(
+          vmp::runtime::cryptor::VmDomain::vm2,
+          vmp::runtime::cryptor::RotationReason::integrity_event);
+      invalidate_modules_without_epoch();
       break;
     case Vm2JitEventKind::detection_event:
       invalidate_all();
@@ -1070,13 +1138,39 @@ void Vm2Jit::invalidate_module_for_key_context_change(const Vm2Module& module) {
   impl_->emit_audit("vm2_jit_invalidate", "module=" + std::to_string(module.id()) + " reason=key_context_change");
 }
 
+void Vm2Jit::invalidate_module_for_epoch_change(std::uint64_t module_id, std::uint32_t current_epoch_id) {
+  std::lock_guard<std::mutex> lock(impl_->mutex);
+  auto mod_it = impl_->modules.find(module_id);
+  if (mod_it == impl_->modules.end()) {
+    return;
+  }
+  std::vector<std::uint32_t> victims;
+  for (const auto& [key, entry] : mod_it->second.entries) {
+    if (key.epoch_id != current_epoch_id) {
+      victims.push_back(entry.entry_pc);
+    }
+  }
+  for (const auto entry_pc : victims) {
+    impl_->erase_entry(mod_it->second.module, mod_it->second, entry_pc, Vm2JitLifecycleState::invalidated, nullptr);
+  }
+  if (victims.empty()) {
+    return;
+  }
+  impl_->emit_audit("vm2_jit_invalidate",
+                    "module=" + std::to_string(module_id) + " reason=epoch_change epoch=" +
+                        std::to_string(current_epoch_id));
+}
+
 Vm2JitEntryStats Vm2Jit::entry_stats(std::uint64_t module_id, std::uint32_t entry_pc) const {
   std::lock_guard<std::mutex> lock(impl_->mutex);
   auto mod_it = impl_->modules.find(module_id);
   if (mod_it == impl_->modules.end()) {
     return {};
   }
-  auto entry_it = mod_it->second.entries.find(entry_pc);
+  const auto epoch_id =
+      vmp::runtime::cryptor::RollingOpcodeRegistry::instance().current_epoch_id(vmp::runtime::cryptor::VmDomain::vm2,
+                                                                                module_id);
+  auto entry_it = impl_->find_entry(mod_it->second, module_id, entry_pc, epoch_id);
   return entry_it == mod_it->second.entries.end() ? Vm2JitEntryStats{} : entry_it->second.stats;
 }
 
@@ -1095,7 +1189,26 @@ std::size_t Vm2Jit::module_cache_bytes(std::uint64_t module_id) const {
 bool Vm2Jit::has_entry(std::uint64_t module_id, std::uint32_t entry_pc) const {
   std::lock_guard<std::mutex> lock(impl_->mutex);
   auto mod_it = impl_->modules.find(module_id);
-  return mod_it != impl_->modules.end() && mod_it->second.entries.find(entry_pc) != mod_it->second.entries.end();
+  if (mod_it == impl_->modules.end()) {
+    return false;
+  }
+  const auto epoch_id =
+      vmp::runtime::cryptor::RollingOpcodeRegistry::instance().current_epoch_id(vmp::runtime::cryptor::VmDomain::vm2,
+                                                                                module_id);
+  return impl_->find_entry(mod_it->second, module_id, entry_pc, epoch_id) != mod_it->second.entries.end();
+}
+
+std::uint32_t Vm2Jit::entry_epoch_id(std::uint64_t module_id, std::uint32_t entry_pc) const {
+  std::lock_guard<std::mutex> lock(impl_->mutex);
+  auto mod_it = impl_->modules.find(module_id);
+  if (mod_it == impl_->modules.end()) {
+    return 0u;
+  }
+  const auto epoch_id =
+      vmp::runtime::cryptor::RollingOpcodeRegistry::instance().current_epoch_id(vmp::runtime::cryptor::VmDomain::vm2,
+                                                                                module_id);
+  auto entry_it = impl_->find_entry(mod_it->second, module_id, entry_pc, epoch_id);
+  return entry_it == mod_it->second.entries.end() ? 0u : entry_it->second.key.epoch_id;
 }
 
 bool Vm2Jit::debug_patch_code_byte(std::uint64_t module_id, std::uint32_t entry_pc, std::size_t offset, std::uint8_t value) {
@@ -1104,7 +1217,10 @@ bool Vm2Jit::debug_patch_code_byte(std::uint64_t module_id, std::uint32_t entry_
   if (mod_it == impl_->modules.end()) {
     return false;
   }
-  auto entry_it = mod_it->second.entries.find(entry_pc);
+  const auto epoch_id =
+      vmp::runtime::cryptor::RollingOpcodeRegistry::instance().current_epoch_id(vmp::runtime::cryptor::VmDomain::vm2,
+                                                                                module_id);
+  auto entry_it = impl_->find_entry(mod_it->second, module_id, entry_pc, epoch_id);
   if (entry_it == mod_it->second.entries.end()) {
     return false;
   }

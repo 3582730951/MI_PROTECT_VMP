@@ -15,6 +15,7 @@ inline constexpr std::size_t kVm1VectorRegisterCount = 16;
 inline constexpr std::size_t kVm1DefaultStackSize = 64u * 1024u;
 inline constexpr std::size_t kOpcodeMapSeedSize = 16u;
 inline constexpr std::uint16_t VMP_FLAG_OPCODE_ENCRYPTED = 0x0001u;
+inline constexpr std::uint16_t VMP_FLAG_REVERSE_ORDER = 0x0002u;
 
 enum class Opcode : std::uint16_t {
   nop = 0x0000,

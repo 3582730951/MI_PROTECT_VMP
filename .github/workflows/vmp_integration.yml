@@ -1,0 +1,79 @@
+name: vmp-integration
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  integration:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-windows
+            os: windows-latest
+            toolchain: msvc
+            vmp_platform: windows
+            vmp_arch: x64
+          - target: aarch64-android
+            os: ubuntu-latest
+            toolchain: ndk-r26
+            vmp_platform: android
+            vmp_arch: arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: setup python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: setup windows llvm
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          choco install llvm -y --no-progress
+          echo "C:/Program Files/LLVM/bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: setup android ndk
+        if: matrix.os == 'ubuntu-latest'
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r26d
+
+      - name: install ubuntu deps
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build build-essential clang lld python3 qemu-user-static unzip curl wine64 mingw-w64
+          echo "ANDROID_NDK_ROOT=${ANDROID_NDK_ROOT}" >> "$GITHUB_ENV"
+
+      - name: configure host tools
+        shell: bash
+        run: |
+          cmake -S . -B build-integration -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DVMP_PLATFORM=${{ matrix.vmp_platform }} -DVMP_ARCH=${{ matrix.vmp_arch }}
+
+      - name: build host tools
+        shell: bash
+        run: |
+          cmake --build build-integration --target vmp-protect vmp-trampoline-inject vmp-cpp-fallback-scan -j
+
+      - name: execute matrix integration
+        shell: bash
+        run: |
+          python3 tests/integration_targets/run_integration_ci.py \
+            --build-dir build-integration \
+            --report-dir reports \
+            --platform-filter ${{ matrix.target }}
+
+      - name: upload reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: reports-${{ matrix.target }}
+          path: reports/

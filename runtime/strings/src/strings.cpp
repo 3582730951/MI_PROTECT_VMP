@@ -192,6 +192,28 @@ Nonce u32_to_nonce(std::uint32_t value) noexcept {
   return nonce;
 }
 
+bool constant_time_equal(const std::uint8_t* lhs, const std::uint8_t* rhs, std::size_t size) noexcept {
+  if (lhs == nullptr || rhs == nullptr) {
+    return lhs == rhs && size == 0;
+  }
+  volatile std::uint8_t diff = 0;
+  for (std::size_t i = 0; i < size; ++i) {
+    diff |= static_cast<std::uint8_t>(lhs[i] ^ rhs[i]);
+  }
+  return diff == 0;
+}
+
+bool constant_time_equal(const std::vector<std::uint8_t>& lhs, const std::vector<std::uint8_t>& rhs) noexcept {
+  volatile std::uint8_t diff = static_cast<std::uint8_t>(lhs.size() ^ rhs.size());
+  const auto limit = std::max(lhs.size(), rhs.size());
+  for (std::size_t i = 0; i < limit; ++i) {
+    const auto l = i < lhs.size() ? lhs[i] : 0u;
+    const auto r = i < rhs.size() ? rhs[i] : 0u;
+    diff |= static_cast<std::uint8_t>(l ^ r);
+  }
+  return diff == 0;
+}
+
 std::vector<std::uint8_t> sha256(const std::vector<std::uint8_t>& data) {
   std::vector<std::uint8_t> padded = data;
   const std::uint64_t bit_len = static_cast<std::uint64_t>(padded.size()) * 8u;
@@ -345,7 +367,7 @@ std::vector<std::uint8_t> decrypt_string_record(const std::array<std::uint8_t, 3
   std::vector<std::uint8_t> enc(record.begin(), record.begin() + static_cast<std::ptrdiff_t>(enc_len));
   std::vector<std::uint8_t> tag(record.begin() + static_cast<std::ptrdiff_t>(enc_len), record.end());
   const auto expected = hmac_sha256(std::vector<std::uint8_t>(key.begin(), key.end()), concat_nonce_record(nonce, enc));
-  if (expected != tag) {
+  if (!constant_time_equal(expected, tag)) {
     secure_memzero(enc.data(), enc.size());
     throw std::runtime_error("strings: authentication failed");
   }

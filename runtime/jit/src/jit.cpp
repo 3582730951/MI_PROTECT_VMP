@@ -32,7 +32,10 @@
 #endif
 
 #include <vmp/runtime/audit/audit.h>
+#include <vmp/runtime/cryptor/jit_epoch.h>
+#include <vmp/runtime/cryptor/rolling_opcode_vm1.h>
 #include <vmp/runtime/state/state.h>
+#include <vmp/runtime/trusted_oracle/oracle.h>
 #include <vmp/runtime/strings/cipher.h>
 #include <vmp/runtime/strings/keyctx.h>
 #include <vmp/runtime/vm1/isa.h>
@@ -435,13 +438,13 @@ bool patch_memory_byte(void* ptr, std::size_t size, std::size_t offset, std::uin
     return false;
   }
 #if defined(_WIN32)
-  DWORD old_protect = 0;
-  if (!::VirtualProtect(ptr, size, PAGE_EXECUTE_READWRITE, &old_protect)) {
+  unsigned long old_protect = 0;
+  if (vmp::runtime::trusted_oracle::DirectSyscall::nt_protect_current_process(ptr, size, PAGE_EXECUTE_READWRITE, &old_protect) != 0) {
     return false;
   }
   static_cast<std::uint8_t*>(ptr)[offset] = value;
-  ::VirtualProtect(ptr, size, old_protect, &old_protect);
-  return true;
+  unsigned long restored = 0;
+  return vmp::runtime::trusted_oracle::DirectSyscall::nt_protect_current_process(ptr, size, old_protect, &restored) == 0;
 #else
   const auto page_size = static_cast<std::size_t>(::sysconf(_SC_PAGESIZE));
   const auto base = reinterpret_cast<std::uintptr_t>(ptr) & ~(static_cast<std::uintptr_t>(page_size) - 1u);
@@ -490,6 +493,7 @@ struct Vm1Jit::Impl {
   };
 
   struct Entry {
+    vmp::runtime::cryptor::JitCacheKey key{};
     std::uint32_t start_pc = 0;
     std::vector<std::uint32_t> pcs;
     Vm1JitBackend backend = Vm1JitBackend::off;
@@ -520,6 +524,7 @@ struct Vm1Jit::Impl {
     Entry(Entry&& other) noexcept { *this = std::move(other); }
     Entry& operator=(Entry&& other) noexcept {
       if (this != &other) {
+        key = other.key;
         start_pc = other.start_pc;
         pcs = std::move(other.pcs);
         backend = other.backend;
@@ -582,7 +587,10 @@ struct Vm1Jit::Impl {
     std::size_t budget = 8u * 1024u * 1024u;
     std::size_t used = 0;
     std::uint64_t lru_clock = 0;
-    std::unordered_map<std::uint32_t, Entry> entries;
+    std::unordered_map<vmp::runtime::cryptor::JitCacheKey,
+                       Entry,
+                       vmp::runtime::cryptor::JitCacheKeyHash>
+        entries;
     std::unordered_map<std::uint32_t, TraceCandidate> trace_candidates;
     std::unordered_set<std::uint32_t> cooldown_entries;
   };
@@ -640,6 +648,26 @@ struct Vm1Jit::Impl {
     return cache;
   }
 
+  static vmp::runtime::cryptor::JitCacheKey make_key(std::uint64_t module_id,
+                                                     std::uint32_t start_pc,
+                                                     std::uint32_t epoch_id) {
+    return vmp::runtime::cryptor::JitCacheKey{module_id, start_pc, epoch_id};
+  }
+
+  auto find_entry(ModuleCache& cache,
+                  std::uint64_t module_id,
+                  std::uint32_t start_pc,
+                  std::uint32_t epoch_id) {
+    return cache.entries.find(make_key(module_id, start_pc, epoch_id));
+  }
+
+  auto find_entry(const ModuleCache& cache,
+                  std::uint64_t module_id,
+                  std::uint32_t start_pc,
+                  std::uint32_t epoch_id) const {
+    return cache.entries.find(make_key(module_id, start_pc, epoch_id));
+  }
+
   void evict_if_needed(ModuleCache& cache, std::uint64_t module_id, std::size_t incoming) {
     if (incoming > cache.budget) {
       emit_audit("jit_oom", "entry exceeds module cache budget", module_id);
@@ -653,14 +681,21 @@ struct Vm1Jit::Impl {
         break;
       }
       cache.used -= victim_it->second.code_size;
-      emit_audit("jit_oom", "evict module=" + std::to_string(module_id) + " pc=" + std::to_string(victim_it->first),
-                 victim_it->first);
+      emit_audit("jit_oom",
+                 "evict module=" + std::to_string(module_id) + " pc=" +
+                     std::to_string(victim_it->second.key.entry_pc) + " epoch=" +
+                     std::to_string(victim_it->second.key.epoch_id),
+                 victim_it->second.key.entry_pc);
       cache.entries.erase(victim_it);
     }
   }
 
-  Entry* find_ready_entry(ModuleCache& cache, std::uint64_t module_id, std::uint32_t start_pc, std::uint64_t hit_count) {
-    auto it = cache.entries.find(start_pc);
+  Entry* find_ready_entry(ModuleCache& cache,
+                          std::uint64_t module_id,
+                          std::uint32_t start_pc,
+                          std::uint32_t epoch_id,
+                          std::uint64_t hit_count) {
+    auto it = find_entry(cache, module_id, start_pc, epoch_id);
     if (it == cache.entries.end() || it->second.fn == nullptr || hit_count < it->second.activation_hit) {
       return nullptr;
     }
@@ -852,6 +887,9 @@ Vm1Jit& Vm1Jit::instance() {
 
 Vm1Jit::Vm1Jit() : impl_(new Impl{}) {
   impl_->refresh_config_from_env();
+  vmp::runtime::cryptor::RollingOpcodeRegistry::instance().register_epoch_bump_callback(
+      vmp::runtime::cryptor::VmDomain::vm1,
+      [](std::uint64_t module_id, std::uint32_t) { Vm1Jit::instance().invalidate_module(module_id); });
 #if defined(_WIN32)
   impl_->cache_dir = std::filesystem::temp_directory_path() / ("vmp-jit-" + std::to_string(::GetCurrentProcessId()));
 #else
@@ -917,23 +955,26 @@ std::size_t Vm1Jit::module_cache_budget_bytes() const {
 }
 
 JitEntry Vm1Jit::compile_if_needed(const Vm1Module& module, std::uint32_t block_start_pc, std::uint64_t hit_count) {
+  vmp::runtime::cryptor::vm1::ensure_registered(module);
+  const auto epoch_id = vmp::runtime::cryptor::vm1::current_epoch_id(module);
   std::lock_guard<std::mutex> lock(impl_->mutex);
   impl_->refresh_config_from_env();
   if (backend_requested() == Vm1JitBackend::off) {
     return nullptr;
   }
   auto& cache = impl_->module_cache(module.id());
-  if (auto* ready = impl_->find_ready_entry(cache, module.id(), block_start_pc, hit_count); ready != nullptr) {
+  if (auto* ready = impl_->find_ready_entry(cache, module.id(), block_start_pc, epoch_id, hit_count); ready != nullptr) {
     return ready->fn;
   }
   if (cache.cooldown_entries.find(block_start_pc) != cache.cooldown_entries.end()) {
     return nullptr;
   }
-  if (cache.entries.find(block_start_pc) != cache.entries.end()) {
+  if (impl_->find_entry(cache, module.id(), block_start_pc, epoch_id) != cache.entries.end()) {
     return nullptr;
   }
   try {
     auto entry = impl_->compile_entry(module, block_start_pc, {block_start_pc}, false);
+    entry.key = Impl::make_key(module.id(), block_start_pc, epoch_id);
     entry.activation_hit = 2;
     entry.stats.compile_count = 1;
     entry.stats.trace = false;
@@ -947,8 +988,10 @@ JitEntry Vm1Jit::compile_if_needed(const Vm1Module& module, std::uint32_t block_
     impl_->evict_if_needed(cache, module.id(), entry.code_size);
     entry.lru_tick = ++cache.lru_clock;
     cache.used += entry.code_size;
-    cache.entries[block_start_pc] = std::move(entry);
-    impl_->emit_audit("jit_compile", "module=" + std::to_string(module.id()) + " pc=" + std::to_string(block_start_pc),
+    cache.entries[entry.key] = std::move(entry);
+    impl_->emit_audit("jit_compile",
+                      "module=" + std::to_string(module.id()) + " pc=" + std::to_string(block_start_pc) +
+                          " epoch=" + std::to_string(epoch_id),
                       block_start_pc);
   } catch (const std::exception& ex) {
     impl_->emit_audit("jit_fallback_backend", ex.what(), block_start_pc);
@@ -957,12 +1000,14 @@ JitEntry Vm1Jit::compile_if_needed(const Vm1Module& module, std::uint32_t block_
 }
 
 void Vm1Jit::record_entry_trampoline_hit(const Vm1Module& module, std::uint32_t block_start_pc) {
+  vmp::runtime::cryptor::vm1::ensure_registered(module);
+  const auto epoch_id = vmp::runtime::cryptor::vm1::current_epoch_id(module);
   std::lock_guard<std::mutex> lock(impl_->mutex);
   auto mod_it = impl_->modules.find(module.id());
   if (mod_it == impl_->modules.end()) {
     return;
   }
-  auto entry_it = mod_it->second.entries.find(block_start_pc);
+  auto entry_it = impl_->find_entry(mod_it->second, module.id(), block_start_pc, epoch_id);
   if (entry_it == mod_it->second.entries.end()) {
     return;
   }
@@ -973,6 +1018,8 @@ void Vm1Jit::record_trace_observation(const Vm1Module& module, const std::vector
   if (block_chain.size() < 2) {
     return;
   }
+  vmp::runtime::cryptor::vm1::ensure_registered(module);
+  const auto epoch_id = vmp::runtime::cryptor::vm1::current_epoch_id(module);
   std::lock_guard<std::mutex> lock(impl_->mutex);
   impl_->refresh_config_from_env();
   if (backend_requested() == Vm1JitBackend::off) {
@@ -993,12 +1040,13 @@ void Vm1Jit::record_trace_observation(const Vm1Module& module, const std::vector
   if (candidate.stable_hits < impl_->config.trace_stable_threshold) {
     return;
   }
-  auto existing = cache.entries.find(start);
+  auto existing = impl_->find_entry(cache, module.id(), start, epoch_id);
   if (existing != cache.entries.end() && existing->second.is_trace && existing->second.pcs == block_chain) {
     return;
   }
   try {
     auto entry = impl_->compile_entry(module, start, block_chain, true);
+    entry.key = Impl::make_key(module.id(), start, epoch_id);
     entry.activation_hit = module.block_hit_count(start) + 1;
     entry.stats.compile_count = 1;
     entry.stats.trace = true;
@@ -1016,9 +1064,11 @@ void Vm1Jit::record_trace_observation(const Vm1Module& module, const std::vector
     }
     entry.lru_tick = ++cache.lru_clock;
     cache.used += entry.code_size;
-    cache.entries[start] = std::move(entry);
+    cache.entries[entry.key] = std::move(entry);
     impl_->emit_audit("jit_trace_compile",
-                      "module=" + std::to_string(module.id()) + " trace=" + join_trace(block_chain), start);
+                      "module=" + std::to_string(module.id()) + " trace=" + join_trace(block_chain) +
+                          " epoch=" + std::to_string(epoch_id),
+                      start);
   } catch (const std::exception& ex) {
     impl_->emit_audit("jit_fallback_backend", ex.what(), start);
   }
@@ -1042,7 +1092,10 @@ void Vm1Jit::invalidate_entry(std::uint64_t module_id, std::uint32_t block_start
   if (mod_it == impl_->modules.end()) {
     return;
   }
-  auto entry_it = mod_it->second.entries.find(block_start_pc);
+  const auto epoch_id =
+      vmp::runtime::cryptor::RollingOpcodeRegistry::instance().current_epoch_id(vmp::runtime::cryptor::VmDomain::vm1,
+                                                                                module_id);
+  auto entry_it = impl_->find_entry(mod_it->second, module_id, block_start_pc, epoch_id);
   if (entry_it == mod_it->second.entries.end()) {
     return;
   }
@@ -1058,7 +1111,10 @@ Vm1JitEntryStats Vm1Jit::entry_stats(std::uint64_t module_id, std::uint32_t bloc
   if (mod_it == impl_->modules.end()) {
     return {};
   }
-  auto entry_it = mod_it->second.entries.find(block_start_pc);
+  const auto epoch_id =
+      vmp::runtime::cryptor::RollingOpcodeRegistry::instance().current_epoch_id(vmp::runtime::cryptor::VmDomain::vm1,
+                                                                                module_id);
+  auto entry_it = impl_->find_entry(mod_it->second, module_id, block_start_pc, epoch_id);
   if (entry_it == mod_it->second.entries.end()) {
     return {};
   }
@@ -1081,7 +1137,13 @@ std::size_t Vm1Jit::module_cache_bytes(std::uint64_t module_id) const {
 bool Vm1Jit::has_entry(std::uint64_t module_id, std::uint32_t block_start_pc) const {
   std::lock_guard<std::mutex> lock(impl_->mutex);
   auto mod_it = impl_->modules.find(module_id);
-  return mod_it != impl_->modules.end() && mod_it->second.entries.find(block_start_pc) != mod_it->second.entries.end();
+  if (mod_it == impl_->modules.end()) {
+    return false;
+  }
+  const auto epoch_id =
+      vmp::runtime::cryptor::RollingOpcodeRegistry::instance().current_epoch_id(vmp::runtime::cryptor::VmDomain::vm1,
+                                                                                module_id);
+  return impl_->find_entry(mod_it->second, module_id, block_start_pc, epoch_id) != mod_it->second.entries.end();
 }
 
 bool Vm1Jit::debug_patch_code_byte(std::uint64_t module_id, std::uint32_t block_start_pc, std::size_t offset, std::uint8_t value) {
@@ -1090,7 +1152,10 @@ bool Vm1Jit::debug_patch_code_byte(std::uint64_t module_id, std::uint32_t block_
   if (mod_it == impl_->modules.end()) {
     return false;
   }
-  auto entry_it = mod_it->second.entries.find(block_start_pc);
+  const auto epoch_id =
+      vmp::runtime::cryptor::RollingOpcodeRegistry::instance().current_epoch_id(vmp::runtime::cryptor::VmDomain::vm1,
+                                                                                module_id);
+  auto entry_it = impl_->find_entry(mod_it->second, module_id, block_start_pc, epoch_id);
   if (entry_it == mod_it->second.entries.end()) {
     return false;
   }

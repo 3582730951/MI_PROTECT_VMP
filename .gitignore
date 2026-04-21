@@ -17,6 +17,12 @@ target/
 passwd.txt
 .git-credentials
 vm_runtime_audit.log
+STATUS.md
 *.log
+*.txt
 .cargo/
 Cargo.lock
+*.core
+reports/
+plan.txt
+*.md

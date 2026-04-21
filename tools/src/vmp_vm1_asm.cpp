@@ -54,6 +54,7 @@ std::array<std::uint8_t, vmp::runtime::vm1::kOpcodeMapSeedSize> parse_seed_hex(c
 struct Options {
   bool crc_only = false;
   bool encrypt_opcodes = true;
+  bool reverse_layout = false;
   std::optional<std::array<std::uint8_t, vmp::runtime::vm1::kOpcodeMapSeedSize>> opcode_seed;
   std::string input_path;
   std::string output_path;
@@ -69,6 +70,10 @@ Options parse_args(int argc, char** argv) {
       options.encrypt_opcodes = true;
     } else if (arg == "--no-encrypt-opcodes") {
       options.encrypt_opcodes = false;
+    } else if (arg == "--reverse-layout") {
+      options.reverse_layout = true;
+    } else if (arg == "--no-reverse-layout") {
+      options.reverse_layout = false;
     } else if (arg == "--opcode-seed") {
       if (i + 1 >= argc) {
         throw std::runtime_error("--opcode-seed requires <32-hex-char-seed>");
@@ -93,7 +98,7 @@ Options parse_args(int argc, char** argv) {
   }
 
   if (options.input_path.empty() || options.output_path.empty()) {
-    throw std::runtime_error("usage: vmp-vm1-asm [--encrypt-opcodes|--no-encrypt-opcodes] [--opcode-seed <32-hex>] <input.vm1s> <output.vm1>");
+    throw std::runtime_error("usage: vmp-vm1-asm [--encrypt-opcodes|--no-encrypt-opcodes] [--reverse-layout|--no-reverse-layout] [--opcode-seed <32-hex>] <input.vm1s> <output.vm1>");
   }
   if (!options.opcode_seed.has_value()) {
     if (const char* env_seed = std::getenv("VMP_OPCODE_MAP_SEED"); env_seed != nullptr && *env_seed != '\0') {
@@ -114,6 +119,9 @@ int main(int argc, char** argv) {
     }
     vmp::runtime::vm1::AssembleOptions assemble_options;
     assemble_options.encrypt_opcodes = options.encrypt_opcodes;
+    if (options.reverse_layout) {
+      assemble_options.module_flags = static_cast<std::uint16_t>(assemble_options.module_flags | vmp::runtime::vm1::VMP_FLAG_REVERSE_ORDER);
+    }
     assemble_options.opcode_seed = options.opcode_seed;
     const auto module = vmp::runtime::vm1::assemble_module_text(slurp(options.input_path), assemble_options);
     module.save_to_file(options.output_path);

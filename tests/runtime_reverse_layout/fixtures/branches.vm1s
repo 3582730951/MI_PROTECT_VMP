@@ -1,0 +1,18 @@
+entry:
+  ldi_u64 vr1, 0
+  ldi_u64 vr2, 0
+  ldi_u64 vr3, 6
+loop:
+  jeq vr2, vr3, @done
+  add vr1, vr1, vr2
+  ldi_u64 vr4, 1
+  add vr2, vr2, vr4
+  jmp @loop
+done:
+  ldi_u64 vr5, 15
+  jeq vr1, vr5, @ok
+  ldi_u64 vr0, 999
+  ret
+ok:
+  mov vr0, vr1
+  ret

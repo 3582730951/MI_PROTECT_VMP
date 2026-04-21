@@ -300,6 +300,10 @@ MachOContainer apply(const MachOContainer& input, const vmp::policy::PolicyIR& p
   if (!thunk_targets.empty()) {
     const auto thunk = detail::vm_thunk_descriptor_json(thunk_targets, options, "macho");
     data_sections.push_back({"__vmp_vmthk", std::vector<std::uint8_t>(thunk.begin(), thunk.end())});
+    if (options.enable_trampoline) {
+      const auto descriptor = detail::trampoline_descriptor_json(thunk_targets, options, "macho");
+      data_sections.push_back({"__vmp_trmp", std::vector<std::uint8_t>(descriptor.begin(), descriptor.end())});
+    }
   }
   auto out = input;
   out.bytes = rebuild(parsed, data_sections, init_sections);

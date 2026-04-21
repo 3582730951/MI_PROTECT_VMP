@@ -42,6 +42,8 @@ std::vector<std::uint8_t> to_bytes(std::string_view text);
 std::string hex_encode(const std::vector<std::uint8_t>& bytes);
 std::vector<std::uint8_t> hex_decode(const std::string& hex);
 Nonce u32_to_nonce(std::uint32_t value) noexcept;
+bool constant_time_equal(const std::uint8_t* lhs, const std::uint8_t* rhs, std::size_t size) noexcept;
+bool constant_time_equal(const std::vector<std::uint8_t>& lhs, const std::vector<std::uint8_t>& rhs) noexcept;
 
 std::vector<std::uint8_t> sha256(const std::vector<std::uint8_t>& data);
 std::vector<std::uint8_t> hmac_sha256(const std::vector<std::uint8_t>& key, const std::vector<std::uint8_t>& data);

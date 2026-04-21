@@ -49,6 +49,11 @@ target_compile_definitions(vmp_build_options INTERFACE
   VMP_PLATFORM_STR="${VMP_PLATFORM}"
   VMP_ARCH_STR="${VMP_ARCH}"
 )
+if(MSVC)
+  target_compile_options(vmp_build_options INTERFACE /Oy-)
+else()
+  target_compile_options(vmp_build_options INTERFACE -fno-omit-frame-pointer)
+endif()
 
 function(vmp_add_placeholder_library target)
   cmake_parse_arguments(ARG "" "HEADER;SOURCE" "INCLUDES" ${ARGN})

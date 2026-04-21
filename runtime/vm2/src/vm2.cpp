@@ -23,6 +23,10 @@
 #include <string_view>
 #include <utility>
 
+namespace vmp::runtime::detail {
+void audit_reverse_layout_active_once(const std::string& vm_name) noexcept;
+}  // namespace vmp::runtime::detail
+
 namespace vmp::runtime::vm2 {
 namespace {
 using ByteVector = std::vector<std::uint8_t>;
@@ -32,11 +36,12 @@ void append_u16(ByteVector& out, std::uint16_t value);
 void append_u32(ByteVector& out, std::uint32_t value);
 std::uint16_t read_u16(const ByteVector& bytes, std::size_t& offset);
 std::uint32_t read_u32(const ByteVector& bytes, std::size_t& offset);
+std::size_t decode_instruction_size(const ByteVector& code, std::size_t pc);
 std::size_t instruction_size(Opcode opcode);
 
 constexpr std::size_t kVm2LegacyHeaderSize = 4u + 2u + 2u + 4u + 4u + 4u + 4u;
 constexpr std::size_t kVm2HeaderSize = kVm2LegacyHeaderSize + kOpcodeMapSeedSize;
-constexpr char kOpcodeMapPurposeTag[] = "opcode_map_v1";
+constexpr char kOpcodeMapPurposeTag[] = "vmp.cryptor.epoch.v2";
 constexpr std::array<std::uint8_t, 8> kVm2OpcodeMarkerMagic{{'O', 'P', 'M', 'A', 'P', 'C', 'R', 'C'}};
 
 std::string hex_u32(std::uint32_t value) {
@@ -163,6 +168,129 @@ std::uint16_t module_version_for_serialize(const Vm2Module& module) {
     return kVm2LegacyVersion;
   }
   return kVm2Version;
+}
+
+std::vector<std::uint16_t> derive_instruction_lengths_from_code(const ByteVector& code) {
+  std::vector<std::uint16_t> lengths;
+  lengths.reserve(code.size() / 2u);
+  std::size_t pc = 0;
+  while (pc < code.size()) {
+    const auto size = decode_instruction_size(code, pc);
+    lengths.push_back(static_cast<std::uint16_t>(size));
+    pc += size;
+  }
+  return lengths;
+}
+
+ByteVector serialize_length_table(const std::vector<std::uint16_t>& lengths) {
+  ByteVector out;
+  out.reserve(lengths.size() * sizeof(std::uint16_t));
+  for (const auto length : lengths) {
+    append_u16(out, length);
+  }
+  return out;
+}
+
+ByteVector reverse_instruction_storage(const ByteVector& forward_code,
+                                       const std::vector<std::uint16_t>& lengths) {
+  ByteVector reversed;
+  reversed.reserve(forward_code.size());
+  std::vector<std::size_t> starts;
+  starts.reserve(lengths.size());
+  std::size_t forward_pc = 0;
+  for (const auto length : lengths) {
+    if (length == 0u || forward_pc + length > forward_code.size()) {
+      throw std::runtime_error("vm2: invalid reverse instruction length");
+    }
+    starts.push_back(forward_pc);
+    forward_pc += length;
+  }
+  if (forward_pc != forward_code.size()) {
+    throw std::runtime_error("vm2: reverse length table/code size mismatch");
+  }
+  for (std::size_t i = lengths.size(); i > 0; --i) {
+    const auto start = starts[i - 1];
+    const auto length = lengths[i - 1];
+    reversed.insert(reversed.end(),
+                    forward_code.begin() + static_cast<std::ptrdiff_t>(start),
+                    forward_code.begin() + static_cast<std::ptrdiff_t>(start + length));
+  }
+  return reversed;
+}
+
+ByteVector materialize_forward_code_from_reverse_storage(const ByteVector& reverse_storage,
+                                                         const std::vector<std::uint16_t>& lengths,
+                                                         const OpcodeCryptor* cryptor) {
+  ByteVector forward(reverse_storage.size(), 0);
+  std::size_t forward_pc = 0;
+  for (const auto length : lengths) {
+    if (length < 2u) {
+      throw std::runtime_error("vm2: reverse instruction length too small");
+    }
+    if (forward_pc + length > reverse_storage.size()) {
+      throw std::runtime_error("vm2: reverse instruction length exceeds code size");
+    }
+    const auto reverse_pc = reverse_storage.size() - forward_pc - length;
+    if (reverse_pc + length > reverse_storage.size()) {
+      throw std::runtime_error("vm2: reverse instruction offset out of range");
+    }
+    std::size_t opcode_cursor = reverse_pc;
+    const auto raw_opcode = read_u16(reverse_storage, opcode_cursor);
+    const auto opcode = cryptor == nullptr ? static_cast<Opcode>(raw_opcode) : cryptor->decode(raw_opcode);
+    forward[forward_pc] = static_cast<std::uint8_t>(static_cast<std::uint16_t>(opcode) & 0xFFu);
+    forward[forward_pc + 1] = static_cast<std::uint8_t>((static_cast<std::uint16_t>(opcode) >> 8u) & 0xFFu);
+    std::copy(reverse_storage.begin() + static_cast<std::ptrdiff_t>(reverse_pc + 2u),
+              reverse_storage.begin() + static_cast<std::ptrdiff_t>(reverse_pc + length),
+              forward.begin() + static_cast<std::ptrdiff_t>(forward_pc + 2u));
+    forward_pc += length;
+  }
+  return forward;
+}
+
+void validate_length_table_against_code(const ByteVector& forward_code,
+                                        const std::vector<std::uint16_t>& lengths) {
+  std::size_t forward_pc = 0;
+  for (const auto length : lengths) {
+    if (forward_pc + length > forward_code.size()) {
+      throw std::runtime_error("vm2: reverse length table exceeds code size");
+    }
+    if (decode_instruction_size(forward_code, forward_pc) != length) {
+      throw std::runtime_error("vm2: reverse length table disagrees with decoded instruction size");
+    }
+    forward_pc += length;
+  }
+  if (forward_pc != forward_code.size()) {
+    throw std::runtime_error("vm2: reverse length table sum mismatch");
+  }
+}
+
+void clear_reverse_layout_cache(Vm2Module& module) {
+  module.reverse_code.clear();
+  module.reverse_insn_lengths.clear();
+  module.forward_instruction_start_by_pc.clear();
+  module.forward_instruction_length_by_pc.clear();
+  module.reverse_pc_to_forward_pc.clear();
+}
+
+void populate_reverse_layout_cache(Vm2Module& module,
+                                   const std::vector<std::uint16_t>& lengths) {
+  clear_reverse_layout_cache(module);
+  validate_length_table_against_code(module.code, lengths);
+  module.reverse_insn_lengths = lengths;
+  module.reverse_code = reverse_instruction_storage(module.code, module.reverse_insn_lengths);
+  module.forward_instruction_start_by_pc.assign(module.code.size(), 0);
+  module.forward_instruction_length_by_pc.assign(module.code.size(), 0);
+  module.reverse_pc_to_forward_pc.assign(module.code.size(), std::numeric_limits<std::uint64_t>::max());
+  std::size_t forward_pc = 0;
+  for (const auto length : module.reverse_insn_lengths) {
+    const auto reverse_pc = module.code.size() - forward_pc - length;
+    for (std::size_t i = 0; i < length; ++i) {
+      module.forward_instruction_start_by_pc[forward_pc + i] = static_cast<std::uint32_t>(forward_pc);
+      module.forward_instruction_length_by_pc[forward_pc + i] = length;
+      module.reverse_pc_to_forward_pc[reverse_pc + i] = forward_pc;
+    }
+    forward_pc += length;
+  }
 }
 
 
@@ -855,8 +983,10 @@ OpcodeCryptor OpcodeCryptor::from_seed(const MasterKey& master_key, const Seed& 
   std::vector<std::size_t> permutation(cryptor.canonical_words_.size());
   std::iota(permutation.begin(), permutation.end(), 0u);
 
+  auto salt = std::vector<std::uint8_t>(master_key.begin(), master_key.end());
+  salt.insert(salt.end(), std::begin(kOpcodeMapPurposeTag), std::end(kOpcodeMapPurposeTag) - 1);
   const auto prk = vmp::runtime::strings::hkdf_extract_sha256(
-      std::vector<std::uint8_t>(master_key.begin(), master_key.end()),
+      salt,
       std::vector<std::uint8_t>(seed.begin(), seed.end()));
   const auto okm = vmp::runtime::strings::hkdf_expand_sha256(prk,
                                                              vmp::runtime::strings::to_bytes(kOpcodeMapPurposeTag),
@@ -1083,9 +1213,21 @@ Vm2Module Vm2Module::load_from_bytes(const std::vector<std::uint8_t>& bytes) {
     offset += kOpcodeMapSeedSize;
   }
   if ((const_pool_size % 16u) != 0) throw std::runtime_error("vm2: const pool must be 16-byte aligned");
-  if (offset + code_size + const_pool_size + kVm2KeyContextIdSize > bytes.size()) throw std::runtime_error("vm2: truncated const pool");
+  const auto reverse_layout = (module.module_flags & VMP_FLAG_REVERSE_ORDER) != 0u;
+  if (bytes.size() < header_size + code_size + const_pool_size + kVm2KeyContextIdSize) {
+    throw std::runtime_error("vm2: truncated const pool");
+  }
+  const auto reverse_table_bytes = reverse_layout
+                                       ? bytes.size() - header_size - code_size - const_pool_size - kVm2KeyContextIdSize
+                                       : std::size_t{0};
+  if (offset + code_size + reverse_table_bytes + const_pool_size + kVm2KeyContextIdSize > bytes.size()) {
+    throw std::runtime_error("vm2: truncated const pool");
+  }
+  if ((reverse_table_bytes % sizeof(std::uint16_t)) != 0u) {
+    throw std::runtime_error("vm2: reverse length table must be uint16 aligned");
+  }
   const auto actual_crc32 = vmp::runtime::integrity::crc32_compute(bytes.data() + header_size,
-                                                                   code_size + const_pool_size);
+                                                                   code_size + reverse_table_bytes + const_pool_size);
   if (actual_crc32 != module.crc32) {
     append_module_crc_mismatch_audit("expected=" + hex_u32(module.crc32) + " actual=" + hex_u32(actual_crc32));
     throw std::runtime_error("vm2: crc32 mismatch");
@@ -1093,6 +1235,17 @@ Vm2Module Vm2Module::load_from_bytes(const std::vector<std::uint8_t>& bytes) {
   ByteVector serialized_code(bytes.begin() + static_cast<std::ptrdiff_t>(offset),
                              bytes.begin() + static_cast<std::ptrdiff_t>(offset + code_size));
   offset += code_size;
+  std::vector<std::uint16_t> reverse_lengths;
+  if (reverse_layout) {
+    std::size_t table_cursor = offset;
+    const auto reverse_count = reverse_table_bytes / sizeof(std::uint16_t);
+    reverse_lengths.reserve(reverse_count);
+    for (std::size_t i = 0; i < reverse_count; ++i) {
+      reverse_lengths.push_back(read_u16(bytes, table_cursor));
+    }
+    offset = table_cursor;
+    vmp::runtime::detail::audit_reverse_layout_active_once("vm2");
+  }
   bool saw_opcode_marker = false;
   const auto const_slots = const_pool_size / 16u;
   for (std::size_t i = 0; i < const_slots; ++i) {
@@ -1126,26 +1279,44 @@ Vm2Module Vm2Module::load_from_bytes(const std::vector<std::uint8_t>& bytes) {
                                       " actual=" + hex_u32(module.opcode_map_marker_crc32));
       throw std::runtime_error("vm2: opcode map invalid");
     }
-    module.code = decode_code_stream(serialized_code, cryptor);
+    if (reverse_layout) {
+      module.code = materialize_forward_code_from_reverse_storage(serialized_code, reverse_lengths, &cryptor);
+    } else {
+      module.code = decode_code_stream(serialized_code, cryptor);
+    }
   } else {
-    module.code = std::move(serialized_code);
+    if (reverse_layout) {
+      module.code = materialize_forward_code_from_reverse_storage(serialized_code, reverse_lengths, nullptr);
+    } else {
+      module.code = std::move(serialized_code);
+    }
   }
   if (module.entry_pc > module.code.size()) throw std::runtime_error("vm2: entry_pc out of range");
   module.runtime_id = g_next_vm2_module_id.fetch_add(1);
+  if (reverse_layout) {
+    populate_reverse_layout_cache(module, reverse_lengths);
+  } else {
+    clear_reverse_layout_cache(module);
+  }
   module.function_entries = collect_function_entries(module.code, module.entry_pc);
   return module;
 }
 
 std::vector<std::uint8_t> Vm2Module::serialize() const {
   const bool encrypt_opcodes = (module_flags & VMP_FLAG_OPCODE_ENCRYPTED) != 0;
+  const bool reverse_layout = (module_flags & VMP_FLAG_REVERSE_ORDER) != 0;
   const auto write_version = module_version_for_serialize(*this);
   const auto cryptor = encrypt_opcodes ? opcode_cryptor_for_module(*this) : OpcodeCryptor::identity();
-  const auto encoded_code = encrypt_opcodes ? encode_code_stream(code, cryptor) : code;
+  const auto encoded_forward_code = encrypt_opcodes ? encode_code_stream(code, cryptor) : code;
+  const auto lengths = reverse_layout ? derive_instruction_lengths_from_code(code) : std::vector<std::uint16_t>{};
+  const auto encoded_code = reverse_layout ? reverse_instruction_storage(encoded_forward_code, lengths) : encoded_forward_code;
   const auto marker_entry = encrypt_opcodes ? std::optional<Vm2ConstPoolEntry>(make_opcode_marker_entry(cryptor.sanity_marker_crc32()))
                                             : std::nullopt;
+  const auto length_table = reverse_layout ? serialize_length_table(lengths) : ByteVector{};
   std::vector<std::uint8_t> body;
-  body.reserve(encoded_code.size() + (const_pool.size() + (marker_entry.has_value() ? 1u : 0u)) * 16u);
+  body.reserve(encoded_code.size() + length_table.size() + (const_pool.size() + (marker_entry.has_value() ? 1u : 0u)) * 16u);
   body.insert(body.end(), encoded_code.begin(), encoded_code.end());
+  body.insert(body.end(), length_table.begin(), length_table.end());
   for (const auto& entry : const_pool) body.insert(body.end(), entry.bytes.begin(), entry.bytes.end());
   if (marker_entry.has_value()) body.insert(body.end(), marker_entry->bytes.begin(), marker_entry->bytes.end());
   std::vector<std::uint8_t> out;
@@ -1400,7 +1571,16 @@ Vm2Module assemble_module_text(std::string_view text, const AssembleOptions& opt
   if ((module.module_flags & VMP_FLAG_OPCODE_ENCRYPTED) != 0) {
     module.opcode_map_marker_crc32 = opcode_cryptor_for_module(module).sanity_marker_crc32();
   }
+  if ((module.module_flags & VMP_FLAG_REVERSE_ORDER) != 0u) {
+    populate_reverse_layout_cache(module, derive_instruction_lengths_from_code(module.code));
+  } else {
+    clear_reverse_layout_cache(module);
+  }
   return module;
+}
+
+std::vector<std::uint16_t> instruction_lengths(const Vm2Module& module) {
+  return derive_instruction_lengths_from_code(module.code);
 }
 
 std::string opcode_name(Opcode opcode) {

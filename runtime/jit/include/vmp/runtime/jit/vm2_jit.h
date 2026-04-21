@@ -79,11 +79,13 @@ class Vm2Jit {
   void invalidate_entry(std::uint64_t module_id, std::uint32_t entry_pc);
   void invalidate_on_event(Vm2JitEventKind kind);
   void invalidate_module_for_key_context_change(const vmp::runtime::vm2::Vm2Module& module);
+  void invalidate_module_for_epoch_change(std::uint64_t module_id, std::uint32_t current_epoch_id);
 
   Vm2JitEntryStats entry_stats(std::uint64_t module_id, std::uint32_t entry_pc) const;
   std::size_t module_entry_count(std::uint64_t module_id) const;
   std::size_t module_cache_bytes(std::uint64_t module_id) const;
   bool has_entry(std::uint64_t module_id, std::uint32_t entry_pc) const;
+  std::uint32_t entry_epoch_id(std::uint64_t module_id, std::uint32_t entry_pc) const;
 
   bool debug_patch_code_byte(std::uint64_t module_id, std::uint32_t entry_pc, std::size_t offset, std::uint8_t value);
 

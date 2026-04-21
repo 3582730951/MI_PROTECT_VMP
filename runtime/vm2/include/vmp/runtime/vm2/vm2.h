@@ -58,6 +58,11 @@ class Vm2Module {
   std::array<std::uint8_t, kOpcodeMapSeedSize> opcode_map_seed{};
   std::uint32_t opcode_map_marker_crc32 = 0;
   std::vector<std::uint8_t> code;
+  std::vector<std::uint8_t> reverse_code;
+  std::vector<std::uint16_t> reverse_insn_lengths;
+  std::vector<std::uint32_t> forward_instruction_start_by_pc;
+  std::vector<std::uint16_t> forward_instruction_length_by_pc;
+  std::vector<std::uint64_t> reverse_pc_to_forward_pc;
   std::vector<Vm2ConstPoolEntry> const_pool;
   std::array<std::uint8_t, kVm2KeyContextIdSize> key_context_id{};
   std::uint64_t runtime_id = 0;
@@ -196,6 +201,7 @@ struct AssembleOptions {
 
 Vm2Module assemble_module_text(std::string_view text, std::uint16_t module_flags = 0);
 Vm2Module assemble_module_text(std::string_view text, const AssembleOptions& options);
+std::vector<std::uint16_t> instruction_lengths(const Vm2Module& module);
 std::string disassemble_module(const Vm2Module& module);
 std::string opcode_name(Opcode opcode);
 const std::vector<Opcode>& canonical_opcode_sequence();
